@@ -11,9 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Версию pnpm НЕ указываем: она уже задана в package.json полем
+      # packageManager, и дубль роняет экшен с "Multiple versions of pnpm specified"
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         with:
