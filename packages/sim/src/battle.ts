@@ -180,7 +180,7 @@ export function runBattle(
     computeCentroids(w, centroids)
     runTargeting(w, sh)
     runMovement(w, centroids)
-    runCombat(w, rng, stats)
+    runCombat(w, rng, stats, sh)
 
     // Герои, погибшие в этом тике — до применения смертей
     let nDead = 0

@@ -24,6 +24,8 @@ import type { SpatialHash } from '../spatial.js'
 import { cellRange } from '../spatial.js'
 import { distSqUnits } from '../fixed.js'
 import {
+  BLOCK_RADIUS,
+  BLOCK_TIMEOUT_TICKS,
   CLASS_PROFILES,
   COUNTER_PCT,
   NO_TARGET,
@@ -55,6 +57,19 @@ export function runTargeting(w: World, sh: SpatialHash): void {
   for (let i = 0; i < w.aliveCount; i++) {
     const self = w.alive[i]!
 
+    // Блокировка павизой держит цель принудительно, пока павиза жива
+    // и не вышел таймаут «переагра» (02_GDD §3.6)
+    const holder = w.blockedBy[self]!
+    if (holder >= 0) {
+      if (w.hp[holder]! > 0 && w.blockTimer[self]! > 0) {
+        w.blockTimer[self]!--
+        w.target[self] = holder
+        continue
+      }
+      w.blockedBy[self] = -1
+      w.blockTimer[self] = 0
+    }
+
     // Раскидка ретаргета по кадрам
     if (self % RETARGET_PERIOD !== phase) {
       // цель могла умереть между ретаргетами — сбрасываем сразу
@@ -63,8 +78,94 @@ export function runTargeting(w: World, sh: SpatialHash): void {
       if (w.target[self] !== NO_TARGET) continue
     }
 
-    w.target[self] = pickTarget(w, sh, self)
+    const prof = CLASS_PROFILES[w.cls[self]!]!
+    if (prof.isHealer) {
+      w.target[self] = pickHealTarget(w, sh, self)
+      continue
+    }
+
+    const t = pickTarget(w, sh, self)
+    w.target[self] = t
+
+    // Ближний бой залипает на павизе, если та рядом
+    if (t !== NO_TARGET && prof.range <= 40) {
+      const pav = findBlocker(w, sh, self)
+      if (pav !== NO_TARGET) {
+        w.target[self] = pav
+        w.blockedBy[self] = pav
+        w.blockTimer[self] = BLOCK_TIMEOUT_TICKS
+      }
+    }
   }
+}
+
+/**
+ * Поиск вражеской павизы в радиусе блокировки.
+ *
+ * Смысл механики: павиза жертвует уроном ради удержания. Заблокированные враги
+ * стоят на месте и превращаются в статичные мишени для своих дальних и магов.
+ * Это единственная механика фазы 2, которая делает связку «стена + дальние»
+ * сильнее суммы частей.
+ */
+function findBlocker(w: World, sh: SpatialHash, self: number): number {
+  const sx = w.px[self]!
+  const sy = w.py[self]!
+  const myTeam = w.team[self]!
+  cellRange(sh, sx, sy, BLOCK_RADIUS, range4)
+  let best = NO_TARGET
+  let bestD2 = BLOCK_RADIUS * BLOCK_RADIUS + 1
+  for (let cy = range4[1]!; cy <= range4[3]!; cy++) {
+    const rowBase = cy * sh.cols
+    for (let cx = range4[0]!; cx <= range4[2]!; cx++) {
+      const c = rowBase + cx
+      const end = sh.cellStart[c + 1]!
+      for (let k = sh.cellStart[c]!; k < end; k++) {
+        const other = sh.dense[k]!
+        if (w.team[other]! === myTeam || w.hp[other]! <= 0) continue
+        if (!CLASS_PROFILES[w.cls[other]!]!.isBlocker) continue
+        const d2 = distSqUnits(sx, sy, w.px[other]!, w.py[other]!)
+        // тай-брейкер по entityId — иначе равные дистанции недетерминированы
+        if (d2 < bestD2 || (d2 === bestD2 && other < best)) {
+          bestD2 = d2
+          best = other
+        }
+      }
+    }
+  }
+  return best
+}
+
+/** Лекарь целится в союзника с наименьшей долей HP (02_GDD §3.5). */
+function pickHealTarget(w: World, sh: SpatialHash, self: number): number {
+  const prof = CLASS_PROFILES[w.cls[self]!]!
+  const sx = w.px[self]!
+  const sy = w.py[self]!
+  const myTeam = w.team[self]!
+  const r = prof.range
+  cellRange(sh, sx, sy, r, range4)
+
+  let best = NO_TARGET
+  let bestPct = 101
+  for (let cy = range4[1]!; cy <= range4[3]!; cy++) {
+    const rowBase = cy * sh.cols
+    for (let cx = range4[0]!; cx <= range4[2]!; cx++) {
+      const c = rowBase + cx
+      const end = sh.cellStart[c + 1]!
+      for (let k = sh.cellStart[c]!; k < end; k++) {
+        const other = sh.dense[k]!
+        if (w.team[other]! !== myTeam || other === self) continue
+        if (w.hp[other]! <= 0) continue
+        if (distSqUnits(sx, sy, w.px[other]!, w.py[other]!) > r * r) continue
+        const pct = ((w.hp[other]! * 100) / w.hpMax[other]!) | 0
+        if (pct >= 100) continue
+        if (pct < bestPct || (pct === bestPct && other < best)) {
+          bestPct = pct
+          best = other
+        }
+      }
+    }
+  }
+  return best
 }
 
 function pickTarget(w: World, sh: SpatialHash, self: number): number {

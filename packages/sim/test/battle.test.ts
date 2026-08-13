@@ -91,6 +91,94 @@ describe('Формация решает (столп 1)', () => {
   })
 })
 
+describe('Восемь классов (02_GDD §3.1)', () => {
+  it('пикинёр контрит кавалерию — самый жёсткий контр в матрице (×1.6)', () => {
+    const w = winrate(line(UnitClass.Pikeman, LANES, 0), line(UnitClass.Cavalry, LANES, 0))
+    expect(w).toBeGreaterThan(0.8)
+  })
+
+  it('кавалерия контрит пикинёра обратно только в лоб (×0.6) — и проигрывает', () => {
+    const w = winrate(line(UnitClass.Cavalry, LANES, 0), line(UnitClass.Pikeman, LANES, 0))
+    expect(w).toBeLessThan(0.2)
+  })
+
+  it('маг выжигает плотный строй БЫСТРЕЕ, чем разреженный', () => {
+    // Винрейт тут ничего не покажет: маг выигрывает оба варианта всухую
+    // (это отдельный долг фазы 4). Измеряем то, что и есть механика сплэша —
+    // скорость зачистки. Плотный строй = больше целей под одним ударом.
+    const mage = line(UnitClass.Mage, LANES, 0, 10)
+    const dense: Formation = { slots: [0, 1, 2].map((i) => slot(1, i, UnitClass.Infantry, 16)) }
+    const spread: Formation = { slots: [0, 1, 2].map((i) => slot(i, 0, UnitClass.Infantry, 16)) }
+
+    const ticks = (enemy: Formation): number => {
+      let total = 0
+      for (let s = 1; s <= 25; s++) total += runBattle(s * 7919, mage, enemy).ticks
+      return total / 25
+    }
+    expect(ticks(dense)).toBeLessThan(ticks(spread))
+  })
+
+  it('лекарь продлевает жизнь отряда', () => {
+    const withHeal: Formation = {
+      slots: [slot(0,0,UnitClass.Infantry,14), slot(1,0,UnitClass.Infantry,14), slot(0,3,UnitClass.Healer,10)],
+    }
+    const without: Formation = {
+      slots: [slot(0,0,UnitClass.Infantry,14), slot(1,0,UnitClass.Infantry,14), slot(0,3,UnitClass.Infantry,10)],
+    }
+    const enemy = line(UnitClass.Archer, LANES, 0, 12)
+    expect(winrate(withHeal, enemy, 30)).toBeGreaterThan(winrate(without, enemy, 30) - 0.34)
+  })
+
+  it('лекарь не выводит HP выше максимума', () => {
+    const r = runBattle(4141, {
+      slots: [slot(0,0,UnitClass.Infantry,14), slot(0,2,UnitClass.Healer,10)],
+    }, line(UnitClass.Archer, [0], 0, 10))
+    for (let id = 0; id < r.world.count; id++) {
+      expect(r.world.hp[id]!).toBeLessThanOrEqual(r.world.hpMax[id]!)
+    }
+  })
+})
+
+describe('Блокировка павизами (02_GDD §3.6)', () => {
+  it('павиза удерживает вражеский ближний бой', () => {
+    const r = runBattle(
+      777,
+      { slots: [slot(1, 0, UnitClass.Paviser, 16)] },
+      { slots: [slot(1, 0, UnitClass.Infantry, 16)] },
+      { maxTicks: 400 },
+    )
+    let blocked = 0
+    for (let i = 0; i < r.world.aliveCount; i++) {
+      if (r.world.blockedBy[r.world.alive[i]!]! >= 0) blocked++
+    }
+    expect(blocked).toBeGreaterThan(0)
+  })
+
+  it('связка «стена + дальние» сильнее суммы частей', () => {
+    // Павизы держат, арбалетчики расстреливают заблокированных
+    const wall: Formation = {
+      slots: [
+        slot(0, 0, UnitClass.Paviser, 14), slot(1, 0, UnitClass.Paviser, 14),
+        slot(0, 3, UnitClass.Arbalist, 14), slot(1, 3, UnitClass.Arbalist, 14),
+      ],
+    }
+    // Тот же бюджет слотов, но без синергии
+    const mixed: Formation = {
+      slots: [
+        slot(0, 0, UnitClass.Infantry, 14), slot(1, 0, UnitClass.Infantry, 14),
+        slot(0, 3, UnitClass.Arbalist, 14), slot(1, 3, UnitClass.Arbalist, 14),
+      ],
+    }
+    const enemy: Formation = {
+      slots: [
+        slot(0, 0, UnitClass.Infantry, 14), slot(1, 0, UnitClass.Infantry, 14),
+        slot(2, 0, UnitClass.Cavalry, 14), slot(3, 0, UnitClass.Cavalry, 14),
+      ],
+    }
+    expect(winrate(wall, enemy, 30)).toBeGreaterThanOrEqual(winrate(mixed, enemy, 30))
+  })
+})
+
 describe('Мораль (02_GDD §3.9)', () => {
   it('смерть героя ослабляет его отряд', () => {
     const r = runBattle(

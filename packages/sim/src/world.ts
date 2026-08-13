@@ -41,6 +41,10 @@ export interface World {
   readonly owner: Int32Array
   /** множитель статов отряда в процентах: 100 обычно, 60 после moraleBreak */
   readonly moralePct: Int32Array
+  /** entityId павизы, которая держит этот юнит; -1 если свободен (02_GDD §3.6) */
+  readonly blockedBy: Int32Array
+  /** тиков до возможности «переагриться» с павизы */
+  readonly blockTimer: Int32Array
 
   /** dense-массив живых entityId, ВСЕГДА по возрастанию */
   alive: Int32Array
@@ -73,6 +77,8 @@ export function createWorld(cap: number, geometry: Geometry): World {
     isHero: new Int32Array(cap),
     owner: new Int32Array(cap).fill(-1),
     moralePct: new Int32Array(cap).fill(100),
+    blockedBy: new Int32Array(cap).fill(-1),
+    blockTimer: new Int32Array(cap),
     alive: new Int32Array(cap),
     aliveCount: 0,
     pendingDead: new Int32Array(cap),

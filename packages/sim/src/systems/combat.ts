@@ -22,6 +22,8 @@ import type { RngState } from '../rng.js'
 import { rngBelow } from '../rng.js'
 import { distSqUnits } from '../fixed.js'
 import { WX_SHIFT } from '../fixed.js'
+import type { SpatialHash } from '../spatial.js'
+import { cellRange } from '../spatial.js'
 import {
   CLASS_PROFILES,
   COUNTER_PCT,
@@ -43,6 +45,8 @@ export interface CombatStats {
   killedBy: Int32Array
   /** тик смерти, -1 если жив */
   deathTick: Int32Array
+  /** сколько вылечено — отдельной строкой в отчёте, не мешаем с уроном */
+  healed: Int32Array
 }
 
 export function createStats(cap: number): CombatStats {
@@ -52,13 +56,17 @@ export function createStats(cap: number): CombatStats {
     kills: new Int32Array(cap),
     killedBy: new Int32Array(cap).fill(-1),
     deathTick: new Int32Array(cap).fill(-1),
+    healed: new Int32Array(cap),
   }
 }
+
+const splashRange4 = new Int32Array(4)
 
 export function runCombat(
   w: World,
   rng: RngState,
   stats: CombatStats,
+  sh: SpatialHash,
 ): void {
   for (let i = 0; i < w.aliveCount; i++) {
     const id = w.alive[i]!
@@ -75,20 +83,92 @@ export function runCombat(
     const d2 = distSqUnits(w.px[id]!, w.py[id]!, w.px[t]!, w.py[t]!)
     if (d2 > prof.range * prof.range) continue
 
-    const dmg = computeDamage(w, rng, id, t)
-
-    w.hp[t] = w.hp[t]! - dmg
-    stats.dealt[id] = stats.dealt[id]! + dmg
-    stats.taken[t] = stats.taken[t]! + dmg
     w.cd[id] = prof.attackPeriod
 
-    if (w.hp[t]! <= 0) {
-      markDead(w, t)
-      stats.kills[id] = stats.kills[id]! + 1
-      stats.killedBy[t] = id
-      stats.deathTick[t] = w.tick
+    if (prof.isHealer) {
+      applyHeal(w, rng, stats, id, t)
+      continue
+    }
+
+    applyHit(w, rng, stats, id, t)
+
+    // Маг задевает всех вокруг цели. Порядок обхода — по возрастанию entityId
+    // внутри ячеек хэша, иначе RNG потребляется в непредсказуемом порядке.
+    if (prof.splashRadius > 0) {
+      applySplash(w, rng, stats, sh, id, t, prof.splashRadius)
     }
   }
+}
+
+function applyHit(
+  w: World,
+  rng: RngState,
+  stats: CombatStats,
+  attacker: number,
+  victim: number,
+): void {
+  const dmg = computeDamage(w, rng, attacker, victim)
+  w.hp[victim] = w.hp[victim]! - dmg
+  stats.dealt[attacker] = stats.dealt[attacker]! + dmg
+  stats.taken[victim] = stats.taken[victim]! + dmg
+  if (w.hp[victim]! <= 0) {
+    markDead(w, victim)
+    stats.kills[attacker] = stats.kills[attacker]! + 1
+    stats.killedBy[victim] = attacker
+    stats.deathTick[victim] = w.tick
+  }
+}
+
+function applySplash(
+  w: World,
+  rng: RngState,
+  stats: CombatStats,
+  sh: SpatialHash,
+  attacker: number,
+  centerUnit: number,
+  radius: number,
+): void {
+  const cx0 = w.px[centerUnit]!
+  const cy0 = w.py[centerUnit]!
+  const myTeam = w.team[attacker]!
+  cellRange(sh, cx0, cy0, radius, splashRange4)
+  for (let cy = splashRange4[1]!; cy <= splashRange4[3]!; cy++) {
+    const rowBase = cy * sh.cols
+    for (let cx = splashRange4[0]!; cx <= splashRange4[2]!; cx++) {
+      const c = rowBase + cx
+      const end = sh.cellStart[c + 1]!
+      for (let k = sh.cellStart[c]!; k < end; k++) {
+        const other = sh.dense[k]!
+        if (other === centerUnit) continue
+        if (w.team[other]! === myTeam || w.hp[other]! <= 0) continue
+        if (distSqUnits(cx0, cy0, w.px[other]!, w.py[other]!) > radius * radius) continue
+        applyHit(w, rng, stats, attacker, other)
+      }
+    }
+  }
+}
+
+/** Лечение. Никогда не выводит HP выше максимума. */
+function applyHeal(
+  w: World,
+  rng: RngState,
+  stats: CombatStats,
+  healer: number,
+  ally: number,
+): void {
+  const power = ((w.atk[healer]! * w.moralePct[healer]!) / 100) | 0
+  // Тот же порядок потребления RNG, что и у урона — крит, затем разброс
+  const isCrit = rngBelow(rng, 100) < CRIT_CHANCE_PCT
+  const variancePct = VARIANCE_MIN_PCT + rngBelow(rng, VARIANCE_SPAN_PCT)
+  let heal = power
+  if (isCrit) heal = ((heal * CRIT_MULT_PCT) / 100) | 0
+  heal = ((heal * variancePct) / 100) | 0
+
+  const room = w.hpMax[ally]! - w.hp[ally]!
+  if (heal > room) heal = room
+  if (heal <= 0) return
+  w.hp[ally] = w.hp[ally]! + heal
+  stats.healed[healer] = stats.healed[healer]! + heal
 }
 
 function computeDamage(

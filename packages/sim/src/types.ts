@@ -6,9 +6,14 @@
 /** Классы юнитов. Фаза 1 — три из восьми (04_ROADMAP). */
 export const enum UnitClass {
   Infantry = 0,
-  Archer = 1,
-  Cavalry = 2,
-  COUNT = 3,
+  Pikeman = 1,
+  Paviser = 2,
+  Cavalry = 3,
+  Archer = 4,
+  Arbalist = 5,
+  Mage = 6,
+  Healer = 7,
+  COUNT = 8,
 }
 
 export const enum Team {
@@ -72,41 +77,69 @@ export interface ClassProfile {
    * игнорирует ближних и уходит вглубь (02_GDD §3.5).
    */
   readonly wDist: number
+  /** Лечит союзников вместо урона по врагам (02_GDD §3.5). */
+  readonly isHealer: boolean
+  /** Ставит стену: блокирует продвижение вражеского ближнего боя (02_GDD §3.6). */
+  readonly isBlocker: boolean
+  /** Бьёт по площади: урон получают все цели в радиусе splashRadius. */
+  readonly splashRadius: number
 }
 
 export const CLASS_PROFILES: readonly ClassProfile[] = [
   {
     name: 'Infantry',
-    range: 14,
-    speed: 40 * 256,
-    baseHp: 620,
-    baseAtk: 62,
-    baseDef: 44,
-    attackPeriod: 24,
-    laneBound: true,
-    wDist: 65536,
+    range: 14, speed: 40 * 256,
+    baseHp: 620, baseAtk: 62, baseDef: 44, attackPeriod: 24,
+    laneBound: true, wDist: 65536, isHealer: false, isBlocker: false, splashRadius: 0,
   },
   {
-    name: 'Archer',
-    range: 190,
-    speed: 30 * 256,
-    baseHp: 330,
-    baseAtk: 88,
-    baseDef: 16,
-    attackPeriod: 27,
-    laneBound: false,
-    wDist: 65536,
+    // Копьё достаёт дальше меча — отсюда и роль анти-кавалерии: пикинёр бьёт
+    // всадника раньше, чем тот доскачет до контакта.
+    name: 'Pikeman',
+    range: 34, speed: 32 * 256,
+    baseHp: 600, baseAtk: 66, baseDef: 40, attackPeriod: 27,
+    laneBound: true, wDist: 65536, isHealer: false, isBlocker: false, splashRadius: 0,
+  },
+  {
+    // Стена. Платит уроном за удержание: заблокированные враги превращаются
+    // в статичные мишени для дальних и магов (02_GDD §3.6).
+    name: 'Paviser',
+    range: 14, speed: 22 * 256,
+    baseHp: 1150, baseAtk: 30, baseDef: 90, attackPeriod: 32,
+    laneBound: true, wDist: 65536, isHealer: false, isBlocker: true, splashRadius: 0,
   },
   {
     name: 'Cavalry',
-    range: 16,
-    speed: 96 * 256,
-    baseHp: 540,
-    baseAtk: 78,
-    baseDef: 30,
-    attackPeriod: 22,
-    laneBound: true,
-    wDist: 19661, // 0.3 в Q16.16 — летит вглубь
+    range: 16, speed: 96 * 256,
+    baseHp: 540, baseAtk: 78, baseDef: 30, attackPeriod: 22,
+    laneBound: true, wDist: 19661, isHealer: false, isBlocker: false, splashRadius: 0,
+  },
+  {
+    name: 'Archer',
+    range: 190, speed: 30 * 256,
+    baseHp: 330, baseAtk: 88, baseDef: 16, attackPeriod: 27,
+    laneBound: false, wDist: 65536, isHealer: false, isBlocker: false, splashRadius: 0,
+  },
+  {
+    // Дальше лучника, но заметно медленнее стреляет — бурст, а не поток.
+    name: 'Arbalist',
+    range: 240, speed: 24 * 256,
+    baseHp: 300, baseAtk: 132, baseDef: 14, attackPeriod: 42,
+    laneBound: false, wDist: 65536, isHealer: false, isBlocker: false, splashRadius: 0,
+  },
+  {
+    // Выжигание скучек: бьёт по площади, поэтому опасен против плотного строя
+    // и почти бесполезен против одиночек.
+    name: 'Mage',
+    range: 150, speed: 24 * 256,
+    baseHp: 260, baseAtk: 74, baseDef: 10, attackPeriod: 40,
+    laneBound: false, wDist: 65536, isHealer: false, isBlocker: false, splashRadius: 42,
+  },
+  {
+    name: 'Healer',
+    range: 120, speed: 30 * 256,
+    baseHp: 320, baseAtk: 58, baseDef: 18, attackPeriod: 36,
+    laneBound: false, wDist: 65536, isHealer: true, isBlocker: false, splashRadius: 0,
   },
 ]
 
@@ -116,11 +149,27 @@ export const CLASS_PROFILES: readonly ClassProfile[] = [
  * Целые проценты, а не Q16.16 — чтобы дизайнер правил таблицу, а не биты.
  */
 export const COUNTER_PCT: readonly (readonly number[])[] = [
-  //          Inf  Arch  Cav
-  /* Inf  */ [100, 130, 85],
-  /* Arch */ [100, 100, 80],
-  /* Cav  */ [140, 150, 100],
+  //          Inf  Pike  Pav  Cav  Arch  Arb  Mage  Heal
+  /* Inf  */ [100, 115,  75,  85, 130, 130, 130, 130],
+  /* Pike */ [ 90, 100,  85, 160, 100, 100,  80, 110],
+  /* Pav  */ [ 80,  80,  80,  90, 110, 110,  70, 100],
+  /* Cav  */ [140,  60, 135, 100, 150, 150, 160, 150],
+  /* Arch */ [100, 120,  60,  80, 100, 100, 110, 110],
+  /* Arb  */ [110, 120,  90, 115, 110, 100, 110, 110],
+  /* Mage */ [135, 120, 150,  70, 120, 120, 100, 120],
+  /* Heal */ [100, 100, 100, 100, 100, 100, 100, 100],
 ]
+
+/**
+ * Радиус блокировки павизой (02_GDD §3.6).
+ *
+ * Вражеский ближний бой, попавший в этот радиус, залипает на павизе и не идёт
+ * дальше. Значение подбирается: слишком мало — стена не работает, слишком
+ * много — павиза становится обязательной в любом составе.
+ */
+export const BLOCK_RADIUS = 46
+/** Через сколько тиков заблокированный юнит может «переагриться». */
+export const BLOCK_TIMEOUT_TICKS = 5 * TICK_HZ
 
 /** Формула митигации — DECISIONS.md ADR-003 (процентная модель). */
 export const MITIGATION_K_BASE = 400

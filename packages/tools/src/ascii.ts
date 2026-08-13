@@ -10,10 +10,11 @@
 import type { World, BattleResult } from '@mw/sim'
 import { Team, UnitClass, CLASS_PROFILES } from '@mw/sim'
 
-const GLYPH_A = ['i', 'a', 'c'] // Infantry, Archer, Cavalry — своя сторона
-const GLYPH_B = ['I', 'A', 'C'] // враг — заглавные
-const HERO_A = ['#', '@', '%']
-const HERO_B = ['#', '@', '%']
+// Infantry Pikeman Paviser Cavalry Archer Arbalist Mage Healer
+const GLYPH_A = ['i', 'p', 'v', 'c', 'a', 'b', 'm', 'h'] // своя сторона
+const GLYPH_B = ['I', 'P', 'V', 'C', 'A', 'B', 'M', 'H'] // враг — заглавные
+const HERO_A = ['#', '$', '=', '%', '@', '&', '*', '+']
+const HERO_B = ['#', '$', '=', '%', '@', '&', '*', '+']
 
 export interface AsciiOptions {
   width?: number
