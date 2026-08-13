@@ -23,6 +23,8 @@ jobs:
 
       - uses: anthropics/claude-code-action@v1
         with:
-          # Если аутентификация по подписке — замени строку на:
-          # claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Аутентификация по подписке. Токен выпускается локально командой
+          # `claude setup-token` и кладётся в секрет РАЗДЕЛА ACTIONS
+          # (не Agents — тот читает только Copilot):
+          #   gh secret set CLAUDE_CODE_OAUTH_TOKEN -R NikitaOrela/project-legion
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
