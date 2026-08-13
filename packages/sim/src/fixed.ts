@@ -1,0 +1,161 @@
+/**
+ * Fixed-point Q16.16 arithmetic.
+ *
+ * ПОЧЕМУ НЕ FLOAT: спецификация ECMAScript задаёт `+ - * /` и `Math.sqrt` через
+ * IEEE-754 с корректным округлением, но трансцендентные функции явно объявлены
+ * "implementation-approximated". Документированы реальные расхождения между
+ * версиями одного движка (Math.pow(1/3,3) отличается между Node 10 и Node 12)
+ * и между V8 / SpiderMonkey / JavaScriptCore. Для lockstep-детерминизма это фатально.
+ *
+ * ПОЧЕМУ СВОБОДНЫЕ ФУНКЦИИ, А НЕ КЛАСС: единственный публичный бенчмарк
+ * fixed-point-библиотеки в JS даёт ~24 нс на операцию через обёрточное API.
+ * При бюджете 4 мс на 840 юнитов это оставляет ~200 операций на юнит за тик.
+ * Инлайнящиеся функции над сырыми int32 обязаны быть на порядок быстрее — см. bench/fx.bench.ts.
+ *
+ * ПРЕДСТАВЛЕНИЕ: raw int32, где 65536 == 1.0.
+ * Диапазон: −32768.0 … +32767.99998. Шаг: 1/65536 ≈ 1.526e-5.
+ *
+ * ВНИМАНИЕ: диапазона Q16.16 НЕ хватает для мировых координат — dx*dx+dy*dy
+ * переполнится. Для координат используй Q24.8 (см. ниже) или сравнивай
+ * квадраты расстояний в отдельном домене.
+ */
+
+export type Fx = number // raw int32, Q16.16
+
+export const FX_SHIFT = 16
+export const FX_ONE: Fx = 1 << FX_SHIFT // 65536
+export const FX_HALF: Fx = FX_ONE >> 1
+export const FX_MAX: Fx = 0x7fffffff
+export const FX_MIN: Fx = -0x80000000
+
+/** Целое число → Fx. Не проверяет переполнение: |n| должно быть < 32768. */
+export function fxFromInt(n: number): Fx {
+  return (n << FX_SHIFT) | 0
+}
+
+/** Fx → целое, усечение к нулю. */
+export function fxToInt(a: Fx): number {
+  return a < 0 ? -((-a) >> FX_SHIFT) : a >> FX_SHIFT
+}
+
+/** Fx → число с плавающей точкой. ТОЛЬКО для отладки и рендера, никогда в логике. */
+export function fxToFloat(a: Fx): number {
+  return a / FX_ONE
+}
+
+/**
+ * Литерал → Fx. ТОЛЬКО для констант времени компиляции и тестов.
+ * В рантайме симуляции запрещено: аргумент — float.
+ */
+export function fxLit(v: number): Fx {
+  return Math.round(v * FX_ONE) | 0
+}
+
+/**
+ * Умножение Q16.16.
+ *
+ * Наивные варианты не работают:
+ *   (a * b) >> 16          — a*b доходит до 2^62, а double точен только до 2^53
+ *   ((a & 0xffff) * b) >> 16 — оператор >> делает ToInt32 ДО сдвига, старшие биты теряются раньше
+ *
+ * Рабочая схема — разбиение обоих операндов на hi/lo по 16 бит:
+ *   a*b = ah*bh*2^32 + (ah*bl + al*bh)*2^16 + al*bl,  далее >> 16
+ *
+ * Корректность последнего слагаемого: al*bl <= 65535^2 = 4294836225 < 2^32,
+ * поэтому ToUint32 в `>>> 16` тождественно и старшие биты не теряются.
+ */
+export function fxMul(a: Fx, b: Fx): Fx {
+  const ah = a >> 16
+  const al = a & 0xffff
+  const bh = b >> 16
+  const bl = b & 0xffff
+  return (
+    ((Math.imul(ah, bh) << 16) +
+      Math.imul(ah, bl) +
+      Math.imul(al, bh) +
+      ((al * bl) >>> 16)) |
+    0
+  )
+}
+
+/**
+ * Деление Q16.16.
+ *
+ * a * 65536 <= 2^47 — точно представимо в double.
+ * Деление IEEE-754 корректно округлено спецификацией => БИТ-В-БИТ одинаково
+ * во всех движках. Может отличаться на 1 LSB от математически точного
+ * целочисленного деления, но это отличие детерминировано и одинаково везде.
+ *
+ * Усечение к нулю (не floor): fxDiv(-1, 2) === 0, а не -1.
+ */
+export function fxDiv(a: Fx, b: Fx): Fx {
+  return ((a * FX_ONE) / b) | 0
+}
+
+export function fxAbs(a: Fx): Fx {
+  return a < 0 ? (-a | 0) : a
+}
+
+export function fxMin(a: Fx, b: Fx): Fx {
+  return a < b ? a : b
+}
+
+export function fxMax(a: Fx, b: Fx): Fx {
+  return a > b ? a : b
+}
+
+export function fxClamp(a: Fx, lo: Fx, hi: Fx): Fx {
+  return a < lo ? lo : a > hi ? hi : a
+}
+
+/** Линейная интерполяция. t — Fx в диапазоне [0, FX_ONE]. */
+export function fxLerp(a: Fx, b: Fx, t: Fx): Fx {
+  return (a + fxMul(b - a, t)) | 0
+}
+
+/**
+ * Проверка переполнения для dev-сборок. В проде вызовы вырезаются.
+ * Ловит ситуацию, когда промежуточное значение вышло за int32 ДО того,
+ * как `| 0` молча его обрежет.
+ */
+export function fxAssertSafe(v: number, what: string): void {
+  if (!Number.isSafeInteger(v) || v > FX_MAX || v < FX_MIN) {
+    throw new RangeError(`fixed-point overflow in ${what}: ${v}`)
+  }
+}
+
+// --- Q24.8: домен мировых координат ---------------------------------------
+// Диапазон ±8_388_608 при шаге 1/256. Нужен там, где Q16.16 переполняется:
+// квадраты расстояний, координаты большого поля боя.
+
+export type Wx = number // raw int32, Q24.8
+export const WX_SHIFT = 8
+export const WX_ONE: Wx = 1 << WX_SHIFT // 256
+
+export function wxFromInt(n: number): Wx {
+  return (n << WX_SHIFT) | 0
+}
+
+export function wxMul(a: Wx, b: Wx): Wx {
+  const ah = a >> 16
+  const al = a & 0xffff
+  const bh = b >> 16
+  const bl = b & 0xffff
+  // (a*b) >> 8, та же схема с другим итоговым сдвигом
+  const hi = Math.imul(ah, bh)
+  const mid = Math.imul(ah, bl) + Math.imul(al, bh)
+  const lo = al * bl
+  return ((hi << 24) + (mid << 8) + ((lo / 256) | 0)) | 0
+}
+
+/**
+ * Квадрат расстояния между точками Q24.8 — возвращает ЦЕЛОЕ число,
+ * а не Q24.8, чтобы не переполниться. Годится только для сравнения между собой.
+ *
+ * Так избегается sqrt: для выбора цели и проверки дальности он не нужен.
+ */
+export function wxDistSq(ax: Wx, ay: Wx, bx: Wx, by: Wx): number {
+  const dx = (ax - bx) / WX_ONE
+  const dy = (ay - by) / WX_ONE
+  return dx * dx + dy * dy
+}
