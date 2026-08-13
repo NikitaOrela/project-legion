@@ -20,6 +20,8 @@
  */
 
 import type { World } from '../world.js'
+import type { EventBuffer } from '../events.js'
+import { EventKind, pushEvent } from '../events.js'
 import type { SpatialHash } from '../spatial.js'
 import { cellRange } from '../spatial.js'
 import { distSqUnits } from '../fixed.js'
@@ -51,7 +53,7 @@ function searchRadius(cls: number): number {
   return p.laneBound ? 260 : p.range + 60
 }
 
-export function runTargeting(w: World, sh: SpatialHash): void {
+export function runTargeting(w: World, sh: SpatialHash, ev: EventBuffer): void {
   const phase = w.tick % RETARGET_PERIOD
 
   for (let i = 0; i < w.aliveCount; i++) {
@@ -91,9 +93,13 @@ export function runTargeting(w: World, sh: SpatialHash): void {
     if (t !== NO_TARGET && prof.range <= 40) {
       const pav = findBlocker(w, sh, self)
       if (pav !== NO_TARGET) {
+        const wasFree = w.blockedBy[self]! < 0
         w.target[self] = pav
         w.blockedBy[self] = pav
         w.blockTimer[self] = BLOCK_TIMEOUT_TICKS
+        // Событие только в момент залипания, не каждый тик: иначе рендер
+        // будет мигать индикатором непрерывно
+        if (wasFree) pushEvent(ev, EventKind.Blocked, pav, self, 0, 0)
       }
     }
   }

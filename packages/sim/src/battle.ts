@@ -211,7 +211,7 @@ export function stepBattle(s: BattleSession): boolean {
   clearEvents(s.events)
   rebuild(s.sh, w)
   computeCentroids(w, s.centroids)
-  runTargeting(w, s.sh)
+  runTargeting(w, s.sh, s.events)
   runMovement(w, s.centroids)
   runCombat(w, s.rng, s.stats, s.sh, s.events)
 

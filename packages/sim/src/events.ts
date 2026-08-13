@@ -17,6 +17,7 @@ export const enum EventKind {
   Damage = 0,
   Heal = 1,
   Death = 2,
+  /** юнит залип на вражеской павизе — source павиза, target заблокированный */
   Blocked = 3,
 }
 

@@ -43,6 +43,25 @@ interface FloatingNumber {
   vy: number
 }
 
+/**
+ * Значок над юнитом: стрелка контра или щит блокировки.
+ * Живёт доли секунды и возвращается в пул.
+ */
+interface Marker {
+  sprite: Text
+  life: number
+  target: number
+}
+
+/**
+ * Индикатор контра — прямое требование 02_GDD §7.1: краткая иконка при
+ * срабатывании множителя > 1.2. Цветом всплывающей цифры это НЕ заменяется:
+ * цифра говорит «сколько», а стрелка — «почему столько».
+ */
+const COUNTER_MARK = '▲'
+/** Щит: юнит залип на вражеской павизе и никуда больше не идёт (02_GDD §3.6). */
+const BLOCK_MARK = '◤'
+
 export interface ViewOptions {
   width: number
   height: number
@@ -79,8 +98,14 @@ export class BattleView {
 
   private pool: FloatingNumber[] = []
   private active: FloatingNumber[] = []
+  private markPool: Marker[] = []
+  private markActive: Marker[] = []
+  private lastMarkTick = new Int32Array(0)
   /** тик последней показанной цифры по каждой цели */
   private lastNumberTick = new Int32Array(0)
+
+  /** тик последнего обработанного события — для троттлинга значков */
+  private curTick = 0
 
   private scale: number
   private offsetX = 0
@@ -105,6 +130,7 @@ export class BattleView {
     this.unitLayer.removeChildren()
     this.barLayer.removeChildren()
     this.clearNumbers()
+    this.clearMarks()
 
     const w = session.world
     const n = w.count
@@ -116,6 +142,7 @@ export class BattleView {
     this.curX = new Float32Array(n)
     this.curY = new Float32Array(n)
     this.lastNumberTick = new Int32Array(n).fill(-999)
+    this.lastMarkTick = new Int32Array(n).fill(-999)
 
     // Размер канваса берём АКТУАЛЬНЫЙ, а не тот, что был при создании вида.
     // Первая версия считала масштаб один раз в конструкторе — до того, как
@@ -195,6 +222,7 @@ export class BattleView {
   consumeEvents(session: BattleSession): void {
     const ev = session.events
     const w = session.world
+    this.curTick = w.tick
     for (let i = 0; i < ev.count; i++) {
       const o = i * EVENT_STRIDE
       const kind = ev.data[o]!
@@ -213,6 +241,10 @@ export class BattleView {
         if (flags & EventFlag.Crit) color = DMG_COLOR.crit
         if (flags & EventFlag.Splash) color = DMG_COLOR.splash
         this.spawnNumber(this.curX[target]!, this.curY[target]!, `${value}`, color, !!(flags & EventFlag.Crit))
+        if (flags & EventFlag.Counter) this.spawnMark(target, COUNTER_MARK, DMG_COLOR.counter)
+      } else if (kind === EventKind.Blocked) {
+        // Показываем только у героев: 840 щитов — это шум
+        if (w.isHero[target]! === 1) this.spawnMark(target, BLOCK_MARK, 0x9ec5ff)
       } else if (kind === EventKind.Heal && w.isHero[target]! === 1) {
         if (w.tick - this.lastNumberTick[target]! < NUMBER_COOLDOWN_TICKS) continue
         this.lastNumberTick[target] = w.tick
@@ -301,6 +333,7 @@ export class BattleView {
       }
     }
     this.updateNumbers(dt)
+    this.updateMarks(dt)
   }
 
   private spawnNumber(wx: number, wy: number, label: string, color: number, big: boolean): void {
@@ -315,6 +348,53 @@ export class BattleView {
     fn.vy = big ? -34 : -24
     this.fxLayer.addChild(fn.text)
     this.active.push(fn)
+  }
+
+  /** Значок над юнитом. Не чаще раза в 20 тиков на цель. */
+  private spawnMark(target: number, glyph: string, color: number): void {
+    if (this.curTick - this.lastMarkTick[target]! < 20) return
+    this.lastMarkTick[target] = this.curTick
+    const m = this.markPool.pop() ?? {
+      sprite: new Text({
+        text: '',
+        style: new TextStyle({
+          fontFamily: 'monospace', fontSize: 13, fontWeight: 'bold',
+          fill: 0xffffff, stroke: { color: 0x000000, width: 3 },
+        }),
+      }),
+      life: 0,
+      target: -1,
+    }
+    m.sprite.anchor.set(0.5)
+    m.sprite.text = glyph
+    m.sprite.style.fill = color
+    m.sprite.alpha = 1
+    m.sprite.visible = true
+    m.life = 0.55
+    m.target = target
+    this.fxLayer.addChild(m.sprite)
+    this.markActive.push(m)
+  }
+
+  private updateMarks(dt: number): void {
+    for (let i = this.markActive.length - 1; i >= 0; i--) {
+      const m = this.markActive[i]!
+      m.life -= dt
+      if (m.life <= 0) {
+        m.sprite.visible = false
+        this.fxLayer.removeChild(m.sprite)
+        this.markActive.splice(i, 1)
+        this.markPool.push(m)
+        continue
+      }
+      // Значок ездит за целью, а не висит там, где событие произошло
+      const id = m.target
+      m.sprite.position.set(
+        this.offsetX + this.curX[id]! * this.scale,
+        this.offsetY + this.curY[id]! * this.scale - 22,
+      )
+      m.sprite.alpha = Math.min(1, m.life * 3)
+    }
   }
 
   private createNumber(): FloatingNumber {
@@ -347,6 +427,15 @@ export class BattleView {
       fn.text.y += fn.vy * dt
       fn.text.alpha = Math.min(1, fn.life * 2.5)
     }
+  }
+
+  private clearMarks(): void {
+    for (const m of this.markActive) {
+      m.sprite.visible = false
+      this.fxLayer.removeChild(m.sprite)
+      this.markPool.push(m)
+    }
+    this.markActive.length = 0
   }
 
   private clearNumbers(): void {
