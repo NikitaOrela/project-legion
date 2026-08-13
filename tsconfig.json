@@ -1,1 +1,1 @@
-{ "files": [], "references": [{ "path": "./packages/sim" }, { "path": "./packages/tools" }] }
+{ "files": [], "references": [{ "path": "./packages/sim" }, { "path": "./packages/tools" }, { "path": "./packages/render" }, { "path": "./packages/app" }] }

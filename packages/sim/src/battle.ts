@@ -139,12 +139,35 @@ function deployFormation(
   }
 }
 
-export function runBattle(
+/**
+ * Живая сессия боя — то же ядро, но с пошаговым выполнением.
+ *
+ * ЗАЧЕМ ОТДЕЛЬНО ОТ runBattle: рендеру нужно отдавать управление между тиками,
+ * чтобы нарисовать кадр. runBattle прогоняет бой целиком и годится для
+ * headless-инструментов и тестов. Обе функции идут по ОДНОМУ пути — иначе
+ * golden-реплеи проверяли бы не то, что видит игрок.
+ */
+export interface BattleSession {
+  readonly world: World
+  readonly stats: CombatStats
+  readonly events: EventBuffer
+  readonly rng: RngState
+  readonly maxTicks: number
+  tick: number
+  outcome: Outcome
+  finished: boolean
+  // внутреннее
+  readonly sh: SpatialHash
+  readonly centroids: ReturnType<typeof createCentroids>
+  readonly deadHeroes: Int32Array
+}
+
+export function createBattle(
   seed: number,
   a: Formation,
   b: Formation,
   opts: BattleOptions = {},
-): BattleResult {
+): BattleSession {
   const geo = opts.geometry ?? DEFAULT_GEOMETRY
   const maxTicks = opts.maxTicks ?? BATTLE_TIMEOUT_TICKS
 
@@ -156,72 +179,78 @@ export function runBattle(
   deployFormation(w, a, Team.A, geo)
   deployFormation(w, b, Team.B, geo)
 
-  const rng: RngState = rngCreate(0, seed >>> 0, RngStream.Combat)
-  const stats = createStats(cap)
-
   const laneSpan = (geo.lanes - 1) * geo.laneHeight
-  const sh: SpatialHash = createSpatialHash(
-    200,
-    -100,
-    -laneSpan / 2 - 200,
-    geo.fieldWidth + 200,
-    laneSpan + 400,
-    cap,
-  )
-
-  const deadHeroes = new Int32Array(cap)
-  const centroids = createCentroids(geo.lanes)
-  const events = createEventBuffer(2048)
-
-  let outcome = Outcome.Timeout
-  let tick = 0
-
-  for (; tick < maxTicks; tick++) {
-    w.tick = tick
-
-    clearEvents(events)
-    rebuild(sh, w)
-    computeCentroids(w, centroids)
-    runTargeting(w, sh)
-    runMovement(w, centroids)
-    runCombat(w, rng, stats, sh, events)
-
-    // Герои, погибшие в этом тике — до применения смертей
-    let nDead = 0
-    for (let i = 0; i < w.pendingDeadCount; i++) {
-      const id = w.pendingDead[i]!
-      if (w.isHero[id]! === 1) deadHeroes[nDead++] = id
-    }
-    if (nDead > 0) applyMoraleBreak(w, deadHeroes, nDead)
-
-    flushDeaths(w)
-
-    if (opts.onTick) opts.onTick(w, tick, events)
-
-    let liveA = 0
-    let liveB = 0
-    for (let i = 0; i < w.aliveCount; i++) {
-      if (w.team[w.alive[i]!]! === Team.A) liveA++
-      else liveB++
-    }
-    if (liveA === 0 && liveB === 0) {
-      outcome = Outcome.Timeout
-      tick++
-      break
-    }
-    if (liveB === 0) {
-      outcome = Outcome.TeamAWins
-      tick++
-      break
-    }
-    if (liveA === 0) {
-      outcome = Outcome.TeamBWins
-      tick++
-      break
-    }
+  return {
+    world: w,
+    stats: createStats(cap),
+    events: createEventBuffer(2048),
+    rng: rngCreate(0, seed >>> 0, RngStream.Combat),
+    maxTicks,
+    tick: 0,
+    outcome: Outcome.Timeout,
+    finished: false,
+    sh: createSpatialHash(
+      200, -100, -laneSpan / 2 - 200,
+      geo.fieldWidth + 200, laneSpan + 400, cap,
+    ),
+    centroids: createCentroids(geo.lanes),
+    deadHeroes: new Int32Array(cap),
   }
+}
 
-  // Итоги
+/**
+ * Один тик. Возвращает false, когда бой окончен.
+ *
+ * ПОРЯДОК СИСТЕМ ФИКСИРОВАН — менять нельзя, сломаются golden-реплеи.
+ */
+export function stepBattle(s: BattleSession): boolean {
+  if (s.finished) return false
+  const w = s.world
+  w.tick = s.tick
+
+  clearEvents(s.events)
+  rebuild(s.sh, w)
+  computeCentroids(w, s.centroids)
+  runTargeting(w, s.sh)
+  runMovement(w, s.centroids)
+  runCombat(w, s.rng, s.stats, s.sh, s.events)
+
+  // Герои, погибшие в этом тике — до применения смертей
+  let nDead = 0
+  for (let i = 0; i < w.pendingDeadCount; i++) {
+    const id = w.pendingDead[i]!
+    if (w.isHero[id]! === 1) s.deadHeroes[nDead++] = id
+  }
+  if (nDead > 0) applyMoraleBreak(w, s.deadHeroes, nDead)
+
+  flushDeaths(w)
+  s.tick++
+
+  let liveA = 0
+  let liveB = 0
+  for (let i = 0; i < w.aliveCount; i++) {
+    if (w.team[w.alive[i]!]! === Team.A) liveA++
+    else liveB++
+  }
+  if (liveA === 0 && liveB === 0) {
+    s.outcome = Outcome.Timeout
+    s.finished = true
+  } else if (liveB === 0) {
+    s.outcome = Outcome.TeamAWins
+    s.finished = true
+  } else if (liveA === 0) {
+    s.outcome = Outcome.TeamBWins
+    s.finished = true
+  } else if (s.tick >= s.maxTicks) {
+    s.outcome = Outcome.Timeout
+    s.finished = true
+  }
+  return !s.finished
+}
+
+/** Итоги по завершённой (или прерванной) сессии. */
+export function finishBattle(s: BattleSession): BattleResult {
+  const w = s.world
   let survivorsA = 0
   let survivorsB = 0
   let hpA = 0
@@ -231,38 +260,43 @@ export function runBattle(
   for (let id = 0; id < w.count; id++) {
     if (w.team[id]! === Team.A) {
       hpMaxA += w.hpMax[id]!
-      if (w.hp[id]! > 0) {
-        survivorsA++
-        hpA += w.hp[id]!
-      }
+      if (w.hp[id]! > 0) { survivorsA++; hpA += w.hp[id]! }
     } else {
       hpMaxB += w.hpMax[id]!
-      if (w.hp[id]! > 0) {
-        survivorsB++
-        hpB += w.hp[id]!
-      }
+      if (w.hp[id]! > 0) { survivorsB++; hpB += w.hp[id]! }
     }
   }
-
   const hpPctA = hpMaxA > 0 ? ((hpA * 100) / hpMaxA) | 0 : 0
   const hpPctB = hpMaxB > 0 ? ((hpB * 100) / hpMaxB) | 0 : 0
 
-  // При таймауте побеждает сторона с большей долей оставшегося HP (02_GDD §3.4)
+  let outcome = s.outcome
+  // При таймауте побеждает сторона с большей долей HP (02_GDD §3.4)
   if (outcome === Outcome.Timeout) {
     if (hpPctA > hpPctB) outcome = Outcome.TeamAWins
     else if (hpPctB > hpPctA) outcome = Outcome.TeamBWins
   }
 
-  const snap = rngSave(rng)
+  const snap = rngSave(s.rng)
   return {
     outcome,
-    ticks: tick,
+    ticks: s.tick,
     hash: hashWorld(w, snap[0]!, snap[1]!),
-    survivorsA,
-    survivorsB,
-    hpPctA,
-    hpPctB,
-    stats,
+    survivorsA, survivorsB, hpPctA, hpPctB,
+    stats: s.stats,
     world: w,
   }
+}
+
+export function runBattle(
+  seed: number,
+  a: Formation,
+  b: Formation,
+  opts: BattleOptions = {},
+): BattleResult {
+  const s = createBattle(seed, a, b, opts)
+  while (!s.finished) {
+    stepBattle(s)
+    if (opts.onTick) opts.onTick(s.world, s.tick - 1, s.events)
+  }
+  return finishBattle(s)
 }
