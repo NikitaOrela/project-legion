@@ -8,7 +8,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "bench": "vitest bench --run",
-    "battle": "tsx packages/tools/src/watch-battle.ts"
+    "battle": "tsx packages/tools/src/watch-battle.ts",
+    "sim": "tsx packages/tools/src/batch-sim.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
