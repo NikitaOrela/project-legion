@@ -1,1 +1,1 @@
-{ "files": [], "references": [{ "path": "./packages/sim" }] }
+{ "files": [], "references": [{ "path": "./packages/sim" }, { "path": "./packages/tools" }] }

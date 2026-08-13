@@ -5,5 +5,12 @@
   "type": "module",
   "main": "./src/index.ts",
   "dependencies": {},
-  "peerDependencies": {}
+  "peerDependencies": {},
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "types": "./dist/index.d.ts"
 }

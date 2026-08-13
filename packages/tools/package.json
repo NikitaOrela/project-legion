@@ -1,0 +1,8 @@
+{
+  "name": "@mw/tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "dependencies": { "@mw/sim": "workspace:*" }
+}

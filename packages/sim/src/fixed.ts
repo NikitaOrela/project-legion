@@ -159,3 +159,35 @@ export function wxDistSq(ax: Wx, ay: Wx, bx: Wx, by: Wx): number {
   const dy = (ay - by) / WX_ONE
   return dx * dx + dy * dy
 }
+
+/**
+ * Целочисленный квадратный корень. Точный, детерминированный, без float.
+ *
+ * Нужен ровно в одном месте — нормализация вектора движения. Для выбора цели
+ * и проверки дальности корень не нужен: сравниваются квадраты расстояний.
+ *
+ * Метод Ньютона на целых. Сходится за ~5 итераций для наших диапазонов.
+ */
+export function isqrt(n: number): number {
+  if (n <= 0) return 0
+  if (n < 4) return 1
+  let x = n
+  let y = (x + 1) >> 1
+  while (y < x) {
+    x = y
+    y = (x + Math.floor(n / x)) >> 1
+  }
+  return x
+}
+
+/**
+ * Квадрат расстояния между точками Q24.8, в ЦЕЛЫХ мировых единицах.
+ *
+ * Точность 1 единица для выбора цели избыточна, зато арифметика полностью
+ * целочисленная: при поле 1200×600 результат < 2e6, далеко до 2^31.
+ */
+export function distSqUnits(ax: Wx, ay: Wx, bx: Wx, by: Wx): number {
+  const dx = (ax >> WX_SHIFT) - (bx >> WX_SHIFT)
+  const dy = (ay >> WX_SHIFT) - (by >> WX_SHIFT)
+  return dx * dx + dy * dy
+}

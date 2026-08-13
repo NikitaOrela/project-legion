@@ -7,11 +7,13 @@
     "typecheck": "tsc -b",
     "test": "vitest run",
     "test:watch": "vitest",
-    "bench": "vitest bench --run"
+    "bench": "vitest bench --run",
+    "battle": "tsx packages/tools/src/watch-battle.ts"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.23.12",
     "typescript": "^5.7.2",
-    "vitest": "^3.0.0",
-    "@types/node": "^22.10.0"
+    "vitest": "^3.0.0"
   }
 }
