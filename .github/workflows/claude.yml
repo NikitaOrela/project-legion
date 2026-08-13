@@ -23,13 +23,12 @@ jobs:
 
       - uses: anthropics/claude-code-action@v1
         with:
-          # Аутентификация по API-ключу. Секрет должен лежать в разделе
-          # Settings -> Secrets and variables -> ACTIONS
-          # (раздел Agents читает только Copilot, Actions его не видит):
-          #   gh secret set ANTHROPIC_API_KEY -R NikitaOrela/project-legion
+          # Аутентификация по ПОДПИСКЕ. Токен выпускается локально:
+          #   claude setup-token
+          # и кладётся в секрет раздела ACTIONS (раздел Agents читает только
+          # Copilot, workflow его не видит):
+          #   gh secret set CLAUDE_CODE_OAUTH_TOKEN -R NikitaOrela/project-legion
           #
-          # Чтобы перейти на оплату подпиской: выпустить токен командой
-          #   env -u ANTHROPIC_API_KEY claude setup-token
-          # положить в секрет CLAUDE_CODE_OAUTH_TOKEN и заменить строку ниже на
-          #   claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Откат на поштучную оплату API — заменить строку ниже на:
+          #   anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
