@@ -19,6 +19,8 @@
 import type { World } from '../world.js'
 import { markDead } from '../world.js'
 import type { RngState } from '../rng.js'
+import type { EventBuffer } from '../events.js'
+import { EventFlag, EventKind, pushEvent } from '../events.js'
 import { rngBelow } from '../rng.js'
 import { distSqUnits } from '../fixed.js'
 import { WX_SHIFT } from '../fixed.js'
@@ -67,6 +69,7 @@ export function runCombat(
   rng: RngState,
   stats: CombatStats,
   sh: SpatialHash,
+  ev: EventBuffer,
 ): void {
   for (let i = 0; i < w.aliveCount; i++) {
     const id = w.alive[i]!
@@ -86,19 +89,22 @@ export function runCombat(
     w.cd[id] = prof.attackPeriod
 
     if (prof.isHealer) {
-      applyHeal(w, rng, stats, id, t)
+      applyHeal(w, rng, stats, id, t, ev)
       continue
     }
 
-    applyHit(w, rng, stats, id, t)
+    applyHit(w, rng, stats, id, t, ev, 0)
 
     // Маг задевает всех вокруг цели. Порядок обхода — по возрастанию entityId
     // внутри ячеек хэша, иначе RNG потребляется в непредсказуемом порядке.
     if (prof.splashRadius > 0) {
-      applySplash(w, rng, stats, sh, id, t, prof.splashRadius)
+      applySplash(w, rng, stats, sh, id, t, prof.splashRadius, ev)
     }
   }
 }
+
+/** Порог, с которого контр считается «сработавшим» и подсвечивается игроку. */
+const COUNTER_VISIBLE_PCT = 120
 
 function applyHit(
   w: World,
@@ -106,18 +112,36 @@ function applyHit(
   stats: CombatStats,
   attacker: number,
   victim: number,
+  ev: EventBuffer,
+  extraFlags: number,
 ): void {
+  const before = w.hp[victim]!
   const dmg = computeDamage(w, rng, attacker, victim)
-  w.hp[victim] = w.hp[victim]! - dmg
+  w.hp[victim] = before - dmg
   stats.dealt[attacker] = stats.dealt[attacker]! + dmg
   stats.taken[victim] = stats.taken[victim]! + dmg
+
+  let flags = extraFlags | lastHitFlags
+  if (COUNTER_PCT[w.cls[attacker]!]![w.cls[victim]!]! >= COUNTER_VISIBLE_PCT) {
+    flags |= EventFlag.Counter
+  }
+  pushEvent(ev, EventKind.Damage, attacker, victim, dmg, flags)
+
   if (w.hp[victim]! <= 0) {
     markDead(w, victim)
     stats.kills[attacker] = stats.kills[attacker]! + 1
     stats.killedBy[victim] = attacker
     stats.deathTick[victim] = w.tick
+    pushEvent(ev, EventKind.Death, attacker, victim, 0, 0)
   }
 }
+
+/**
+ * Крит определяется внутри computeDamage, а флаг нужен снаружи. Модульная
+ * переменная вместо возврата кортежа: кортеж — это аллокация объекта в самом
+ * горячем цикле симуляции.
+ */
+let lastHitFlags = 0
 
 function applySplash(
   w: World,
@@ -127,6 +151,7 @@ function applySplash(
   attacker: number,
   centerUnit: number,
   radius: number,
+  ev: EventBuffer,
 ): void {
   const cx0 = w.px[centerUnit]!
   const cy0 = w.py[centerUnit]!
@@ -142,7 +167,7 @@ function applySplash(
         if (other === centerUnit) continue
         if (w.team[other]! === myTeam || w.hp[other]! <= 0) continue
         if (distSqUnits(cx0, cy0, w.px[other]!, w.py[other]!) > radius * radius) continue
-        applyHit(w, rng, stats, attacker, other)
+        applyHit(w, rng, stats, attacker, other, ev, EventFlag.Splash)
       }
     }
   }
@@ -155,6 +180,7 @@ function applyHeal(
   stats: CombatStats,
   healer: number,
   ally: number,
+  ev: EventBuffer,
 ): void {
   const power = ((w.atk[healer]! * w.moralePct[healer]!) / 100) | 0
   // Тот же порядок потребления RNG, что и у урона — крит, затем разброс
@@ -169,6 +195,7 @@ function applyHeal(
   if (heal <= 0) return
   w.hp[ally] = w.hp[ally]! + heal
   stats.healed[healer] = stats.healed[healer]! + heal
+  pushEvent(ev, EventKind.Heal, healer, ally, heal, isCrit ? EventFlag.Crit : 0)
 }
 
 function computeDamage(
@@ -192,6 +219,7 @@ function computeDamage(
   // ПОРЯДОК ПОТРЕБЛЕНИЯ RNG — не менять
   const isCrit = rngBelow(rng, 100) < CRIT_CHANCE_PCT
   const variancePct = VARIANCE_MIN_PCT + rngBelow(rng, VARIANCE_SPAN_PCT)
+  lastHitFlags = isCrit ? EventFlag.Crit : 0
 
   let dmg = mitigated
   if (isCrit) dmg = ((dmg * CRIT_MULT_PCT) / 100) | 0

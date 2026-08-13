@@ -23,6 +23,8 @@ import { runTargeting } from './systems/targeting.js'
 import { runMovement, createCentroids, computeCentroids } from './systems/movement.js'
 import type { CombatStats } from './systems/combat.js'
 import { runCombat, createStats, applyMoraleBreak } from './systems/combat.js'
+import type { EventBuffer } from './events.js'
+import { clearEvents, createEventBuffer } from './events.js'
 import { hashWorld } from './hash.js'
 import type { StateHash } from './hash.js'
 import { WX_SHIFT } from './fixed.js'
@@ -71,7 +73,7 @@ export interface BattleOptions {
   readonly geometry?: Geometry
   readonly maxTicks?: number
   /** колбэк после каждого тика — для ASCII-визуализатора и отладки */
-  readonly onTick?: (w: World, tick: number) => void
+  readonly onTick?: (w: World, tick: number, ev: EventBuffer) => void
 }
 
 const HERO_STAT_BONUS_PCT = 260 // герой заметно крепче миньона своего класса
@@ -169,6 +171,7 @@ export function runBattle(
 
   const deadHeroes = new Int32Array(cap)
   const centroids = createCentroids(geo.lanes)
+  const events = createEventBuffer(2048)
 
   let outcome = Outcome.Timeout
   let tick = 0
@@ -176,11 +179,12 @@ export function runBattle(
   for (; tick < maxTicks; tick++) {
     w.tick = tick
 
+    clearEvents(events)
     rebuild(sh, w)
     computeCentroids(w, centroids)
     runTargeting(w, sh)
     runMovement(w, centroids)
-    runCombat(w, rng, stats, sh)
+    runCombat(w, rng, stats, sh, events)
 
     // Герои, погибшие в этом тике — до применения смертей
     let nDead = 0
@@ -192,7 +196,7 @@ export function runBattle(
 
     flushDeaths(w)
 
-    if (opts.onTick) opts.onTick(w, tick)
+    if (opts.onTick) opts.onTick(w, tick, events)
 
     let liveA = 0
     let liveB = 0
