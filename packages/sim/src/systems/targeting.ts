@@ -24,7 +24,7 @@ import type { EventBuffer } from '../events.js'
 import { EventKind, pushEvent } from '../events.js'
 import type { SpatialHash } from '../spatial.js'
 import { cellRange } from '../spatial.js'
-import { distSqUnits } from '../fixed.js'
+import { distSqUnits, WX_SHIFT } from '../fixed.js'
 import {
   BLOCK_RADIUS,
   BLOCK_TIMEOUT_TICKS,
@@ -34,6 +34,7 @@ import {
   NO_TARGET,
   PREF_TARGET,
   RETARGET_PERIOD,
+  Team,
   UnitClass,
   W_PREF,
 } from '../types.js'
@@ -182,17 +183,40 @@ function findBlocker(w: World, sh: SpatialHash, self: number): number {
   return best
 }
 
-/** Лекарь целится в союзника с наименьшей долей HP (02_GDD §3.5). */
+/**
+ * Выбор цели лечения.
+ *
+ * ПРАВИЛО ПЕРВОИСТОЧНИКА, дословно: «лечит щитовика ПЕРЕД собой; если такого
+ * нет — самого переднего союзника; дальнейшее лечение — самому раненому».
+ *
+ * Раньше у нас был реализован только последний пункт: брали сразу самого
+ * раненого. Звучит разумно, работает плохо, и замер это показал — лекарь
+ * восстанавливал 13.5% от всего урона в игре, но состав «стена с лечением»
+ * держал 28% винрейта. Лечить много не значит лечить полезно.
+ *
+ * Причина в том, что «самый раненый» — это обычно тот, кого уже почти добили,
+ * и часто вообще не тот, кто держит строй. Лекарь тратит хилы на юнита в
+ * тылу, случайно подраненного залётным выстрелом, пока павиза во фронте
+ * ломается. А ломается фронт — рассыпается всё построение.
+ *
+ * Позиционный приоритет это чинит: лечение идёт туда, где идёт бой. Раненость
+ * остаётся, но как третий по важности критерий, а не единственный.
+ */
+const W_HEAL_BLOCKER = 300
+const W_HEAL_FRONT = 100
+const W_HEAL_INJURY = 120
+
 function pickHealTarget(w: World, sh: SpatialHash, self: number): number {
   const prof = CLASS_PROFILES[w.cls[self]!]!
   const sx = w.px[self]!
   const sy = w.py[self]!
   const myTeam = w.team[self]!
   const r = prof.range
+  const fieldW = w.geometry.fieldWidth
   cellRange(sh, sx, sy, r, range4)
 
   let best = NO_TARGET
-  let bestPct = 101
+  let bestScore = -0x7fffffff
   for (let cy = range4[1]!; cy <= range4[3]!; cy++) {
     const rowBase = cy * sh.cols
     for (let cx = range4[0]!; cx <= range4[2]!; cx++) {
@@ -205,8 +229,19 @@ function pickHealTarget(w: World, sh: SpatialHash, self: number): number {
         if (distSqUnits(sx, sy, w.px[other]!, w.py[other]!) > r * r) continue
         const pct = ((w.hp[other]! * 100) / w.hpMax[other]!) | 0
         if (pct >= 100) continue
-        if (pct < bestPct || (pct === bestPct && other < best)) {
-          bestPct = pct
+
+        // «Передний» — тот, кто дальше продвинулся к врагу. Команда A идёт
+        // вправо, команда B влево, поэтому мера считается от своего края.
+        const xu = w.px[other]! >> WX_SHIFT
+        const frontness = myTeam === Team.A ? xu : fieldW - xu
+        const score =
+          (CLASS_PROFILES[w.cls[other]!]!.isBlocker ? W_HEAL_BLOCKER : 0) +
+          (((frontness * W_HEAL_FRONT) / (fieldW || 1)) | 0) +
+          ((((100 - pct) * W_HEAL_INJURY) / 100) | 0)
+
+        // тай-брейкер по entityId — без него равные счета недетерминированы
+        if (score > bestScore || (score === bestScore && other < best)) {
+          bestScore = score
           best = other
         }
       }

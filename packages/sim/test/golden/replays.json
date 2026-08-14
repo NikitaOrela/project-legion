@@ -29,10 +29,10 @@
   {
     "name": "full-scale-840",
     "seed": 4004,
-    "ticks": 1840,
+    "ticks": 2028,
     "outcome": 1,
-    "hash": "19aecbdc",
-    "positions": "174b0346",
-    "health": "7963713c"
+    "hash": "119f5ad6",
+    "positions": "364d277b",
+    "health": "2c18a2c9"
   }
 ]

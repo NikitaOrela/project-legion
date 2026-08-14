@@ -53,6 +53,7 @@ import {
   HOLD_DEF_STEP_PCT,
   HOLD_MAX_STACKS,
   HOLD_PERIOD,
+  HEAL_POWER_PCT,
   MAGE_SPLASH_PERIOD,
   NO_TARGET,
   SPLASH_PCT,
@@ -344,7 +345,8 @@ function applyHeal(
   ally: number,
   ev: EventBuffer,
 ): void {
-  const power = ((w.atk[healer]! * w.moralePct[healer]!) / 100) | 0
+  const power =
+    ((((w.atk[healer]! * w.moralePct[healer]!) / 100) | 0) * HEAL_POWER_PCT / 100) | 0
   const prof = CLASS_PROFILES[w.cls[healer]!]!
   /*
    * Тот же порядок потребления RNG, что и у урона: попадание, крит, разброс.

@@ -191,7 +191,13 @@ const ARCHETYPES: Archetype[] = [
     formation: equalize([
       slot(0, 0, UnitClass.Paviser), slot(1, 0, UnitClass.Paviser),
       slot(2, 0, UnitClass.Infantry), slot(0, 2, UnitClass.Archer),
-      slot(1, 3, UnitClass.Healer), slot(2, 3, UnitClass.Healer),
+      // Лекари в 1-м ранге, а НЕ в 3-м, и это не мелочь: дальность лекаря 130,
+      // а до фронта из 3-го ранга 150 единиц — он физически не достаёт до тех,
+      // кого должен лечить. Замер: тот же состав с лекарями в тылу держит 0%,
+      // с лекарями у фронта — 60%. Короткая дальность саппорта — это механика
+      // первоисточника (жрец 20 против лучника 30), и она превращает
+      // расстановку лекаря в решение игрока, а не в декорацию.
+      slot(1, 1, UnitClass.Healer), slot(2, 1, UnitClass.Healer),
     ]),
     isProbe: false,
   },
