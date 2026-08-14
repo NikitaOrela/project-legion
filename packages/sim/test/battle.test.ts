@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { runBattle, Outcome } from '../src/battle.js'
 import type { Formation, Slot } from '../src/battle.js'
-import { UnitClass } from '../src/types.js'
+import { CLASS_PROFILES, DEFAULT_GEOMETRY, UnitClass } from '../src/types.js'
 
 const slot = (lane: number, rank: number, cls: number, squad = 12, level = 10): Slot =>
   ({ lane, rank, cls, level, squad })
@@ -349,5 +349,25 @@ describe('Отчёт о бое (столп 2)', () => {
       }
     }
     expect(attributed).toBeGreaterThan(0)
+  })
+})
+
+describe('Геометрия сетки', () => {
+  /*
+   * Связь неочевидная и потому опасная: глубина ранга и дальность дальнего боя
+   * — разные числа в разных местах файла, но задают они одно свойство.
+   *
+   * Если задний ранг дальше, чем бьёт самый дальнобойный класс, четверть сетки
+   * становится мёртвой: юнит туда ставится, но до боя не достаёт никогда.
+   * Это не «слабая позиция», а обман — игрок не получает ничего и не может
+   * понять почему.
+   *
+   * Ловилось руками при подборе rankDepth: 65 давал лучшую балансную метрику
+   * и убивал третий ранг. Тест нужен, чтобы следующая такая правка упала сама.
+   */
+  it('самый дальнобойный класс достаёт из заднего ранга до линии боя', () => {
+    const deepest = DEFAULT_GEOMETRY.rankDepth * (DEFAULT_GEOMETRY.ranks - 1)
+    const maxRange = Math.max(...CLASS_PROFILES.map((p) => p.range))
+    expect(deepest).toBeLessThan(maxRange)
   })
 })

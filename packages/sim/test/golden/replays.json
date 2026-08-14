@@ -2,37 +2,37 @@
   {
     "name": "combined-arms-vs-mono",
     "seed": 1001,
-    "ticks": 1524,
+    "ticks": 1214,
     "outcome": 1,
-    "hash": "a01293c3",
-    "positions": "cfe2780d",
-    "health": "e7f554c0"
+    "hash": "9dd17fac",
+    "positions": "5b224b32",
+    "health": "a80754c8"
   },
   {
     "name": "cavalry-dive",
     "seed": 2002,
-    "ticks": 707,
+    "ticks": 681,
     "outcome": 1,
-    "hash": "48fbc7df",
-    "positions": "29751888",
-    "health": "8a39d606"
+    "hash": "b93170af",
+    "positions": "8efba169",
+    "health": "174e5716"
   },
   {
     "name": "empty-lane-gambit",
     "seed": 3003,
-    "ticks": 1014,
+    "ticks": 970,
     "outcome": 1,
-    "hash": "29f76fbb",
-    "positions": "6a4690c5",
-    "health": "febdecf6"
+    "hash": "29446099",
+    "positions": "b1fc493f",
+    "health": "e8e17084"
   },
   {
     "name": "full-scale-840",
     "seed": 4004,
-    "ticks": 2283,
+    "ticks": 1635,
     "outcome": 1,
-    "hash": "52812bc8",
-    "positions": "dcd5757e",
-    "health": "ad9216b7"
+    "hash": "c3ce20ab",
+    "positions": "f32286dc",
+    "health": "f9a556c5"
   }
 ]

@@ -130,8 +130,14 @@ const ARCHETYPES: Archetype[] = [
     name: 'фронт + маги',
     formation: equalize([
       slot(0, 0, UnitClass.Infantry), slot(1, 0, UnitClass.Infantry),
-      slot(2, 0, UnitClass.Infantry), slot(0, 3, UnitClass.Mage),
-      slot(1, 3, UnitClass.Mage), slot(2, 3, UnitClass.Mage),
+      slot(2, 0, UnitClass.Infantry),
+      // Маги в 1-м ранге, а не в 3-м: дальность мага 130, из третьего ранга
+      // до линии соприкосновения 195 единиц — он туда просто не достаёт.
+      // Та же ошибка расстановки, что была у лекарей, и найдена тем же
+      // способом. Архетип обязан быть собран компетентно, иначе он мерит
+      // не связку «фронт + маги», а неумение ставить.
+      slot(0, 1, UnitClass.Mage), slot(1, 1, UnitClass.Mage),
+      slot(2, 1, UnitClass.Mage),
     ]),
     isProbe: false,
   },
