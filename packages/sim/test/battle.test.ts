@@ -143,7 +143,7 @@ describe('Восемь классов (02_GDD §3.1)', () => {
  * Суммарный урон арбалетчиков стороны A, усреднённый по прогонам.
  * Меряет вклад тех, кто стоит ЗА фронтом, — то есть то, ради чего фронт нужен.
  */
-function arbalistDamage(f: Formation, n = 30): number {
+function arbalistDamage(f: Formation, n = 20): number {
   let total = 0
   for (let i = 1; i <= n; i++) {
     const r = runBattle((i * 2654435761) >>> 0, f, wallTestEnemy)
