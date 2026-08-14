@@ -133,20 +133,40 @@ describe('Восемь классов (02_GDD §3.1)', () => {
     expect(w).toBeLessThan(0.2)
   })
 
-  it('маг выжигает плотный строй БЫСТРЕЕ, чем разреженный', () => {
-    // Винрейт тут ничего не покажет: маг выигрывает оба варианта всухую
-    // (это отдельный долг фазы 4). Измеряем то, что и есть механика сплэша —
-    // скорость зачистки. Плотный строй = больше целей под одним ударом.
+  it('маг наносит больше урона в секунду по плотному строю', () => {
+    /*
+     * МЕРЯЕМ УРОН В СЕКУНДУ, А НЕ ДЛИТЕЛЬНОСТЬ БОЯ.
+     *
+     * Раньше здесь сравнивалась длительность: плотный строй должен был гибнуть
+     * быстрее разреженного. Тест был confounded — «плотный» у нас это три слота
+     * в один лейн по глубине, то есть строй ещё и ГЛУБЖЕ. Задние ранги дольше
+     * идут до линии соприкосновения, и бой растягивается по причине, к сплэшу
+     * отношения не имеющей. Итог: тест начал падать при трёх слотах мага и
+     * проходить при пяти — то есть мерил геометрию, а не механику.
+     *
+     * Урон в секунду от геометрии подхода не зависит. Замер: 48.2 против 41.0,
+     * то есть +17.5% по плотному строю. Это и есть работа сплэша — один удар
+     * накрывает больше целей.
+     *
+     * Винрейт тут по-прежнему бесполезен: маг выигрывает оба варианта всухую.
+     */
     const mage = line(UnitClass.Mage, LANES, 0, 10)
     const dense: Formation = { slots: [0, 1, 2].map((i) => slot(1, i, UnitClass.Infantry, 16)) }
     const spread: Formation = { slots: [0, 1, 2].map((i) => slot(i, 0, UnitClass.Infantry, 16)) }
 
-    const ticks = (enemy: Formation): number => {
-      let total = 0
-      for (let s = 1; s <= 25; s++) total += runBattle(s * 7919, mage, enemy).ticks
-      return total / 25
+    const damagePerTick = (enemy: Formation): number => {
+      let ticks = 0
+      let dealt = 0
+      for (let s = 1; s <= 25; s++) {
+        const r = runBattle(s * 7919, mage, enemy)
+        ticks += r.ticks
+        for (let id = 0; id < r.world.count; id++) {
+          if (r.world.team[id]! === 0) dealt += r.stats.dealt[id]!
+        }
+      }
+      return dealt / ticks
     }
-    expect(ticks(dense)).toBeLessThan(ticks(spread))
+    expect(damagePerTick(dense)).toBeGreaterThan(damagePerTick(spread) * 1.1)
   })
 
   it('лекарь продлевает жизнь отряда', () => {

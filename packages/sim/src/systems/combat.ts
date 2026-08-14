@@ -53,8 +53,6 @@ import {
   HOLD_DEF_STEP_PCT,
   HOLD_MAX_STACKS,
   HOLD_PERIOD,
-  CRIT_CHANCE_PCT,
-  CRIT_MULT_PCT,
   MAGE_SPLASH_PERIOD,
   NO_TARGET,
   SPLASH_PCT,
@@ -244,6 +242,12 @@ function applyHit(
     dmg = ((dmg * SPLASH_PCT) / 100) | 0
     if (dmg < 1) dmg = 1
   }
+  if (dmg === 0) {
+    // Промах. Событие отправляем, урон не копим — см. EventFlag.Miss.
+    pushEvent(ev, EventKind.Damage, attacker, victim, 0, extraFlags | lastHitFlags)
+    return
+  }
+
   pendDmg[victim] = pendDmg[victim]! + dmg
   stats.dealt[attacker] = stats.dealt[attacker]! + dmg
   stats.taken[victim] = stats.taken[victim]! + dmg
@@ -341,11 +345,20 @@ function applyHeal(
   ev: EventBuffer,
 ): void {
   const power = ((w.atk[healer]! * w.moralePct[healer]!) / 100) | 0
-  // Тот же порядок потребления RNG, что и у урона — крит, затем разброс
-  const isCrit = rngBelow(rng, 100) < CRIT_CHANCE_PCT
+  const prof = CLASS_PROFILES[w.cls[healer]!]!
+  /*
+   * Тот же порядок потребления RNG, что и у урона: попадание, крит, разброс.
+   * Бросок попадания делается вхолостую — по союзнику промахнуться нельзя, —
+   * но он обязан быть, чтобы лечение и удар тратили одинаковое число значений
+   * генератора. Иначе состав с лекарем сдвигал бы RNG-поток относительно
+   * состава без него, и golden-реплеи разъезжались бы от одной перестановки
+   * слота.
+   */
+  rngBelow(rng, prof.accuracy)
+  const isCrit = rngBelow(rng, prof.critChance + prof.tenacity) < prof.critChance
   const variancePct = VARIANCE_MIN_PCT + rngBelow(rng, VARIANCE_SPAN_PCT)
   let heal = power
-  if (isCrit) heal = ((heal * CRIT_MULT_PCT) / 100) | 0
+  if (isCrit) heal = ((heal * (100 + prof.critMultPct)) / 100) | 0
   heal = ((heal * variancePct) / 100) | 0
 
   // Отсечка по максимуму — в settleTick, а не здесь: на момент удара мы ещё не
@@ -382,13 +395,37 @@ function computeDamage(
   // в квадрат числителя и +20% превращается в +44%.
   const countered = ((mitigated * COUNTER_PCT[aCls]![dCls]!) / 100) | 0
 
-  // ПОРЯДОК ПОТРЕБЛЕНИЯ RNG — не менять
-  const isCrit = rngBelow(rng, 100) < CRIT_CHANCE_PCT
+  const aProf = CLASS_PROFILES[aCls]!
+  const dProf = CLASS_PROFILES[dCls]!
+
+  /*
+   * ПОРЯДОК ПОТРЕБЛЕНИЯ RNG ФИКСИРОВАН: попадание, крит, разброс.
+   * Все три броска делаются ВСЕГДА, даже когда результат уже известен —
+   * иначе число обращений к генератору зависело бы от исхода, и любая правка
+   * баланса разъезжала бы все golden-реплеи.
+   *
+   * СЕМЕЙСТВО X/(X+Y) — ADR-011. Один и тот же закон на обе пары статов:
+   *   попадание = accuracy / (accuracy + evasion)
+   *   крит      = critChance / (critChance + tenacity)
+   * При равенстве ровно 50%, дальше убывающая отдача, потолка в 100% нет
+   * никогда. Раньше здесь стояли плоские 10% крита и никакого уклонения —
+   * то есть три из четырёх статов не существовали, и различать классы было
+   * нечем, кроме HP, ATK и дальности.
+   */
+  const hitRoll = rngBelow(rng, aProf.accuracy + dProf.evasion)
+  const critRoll = rngBelow(rng, aProf.critChance + dProf.tenacity)
   const variancePct = VARIANCE_MIN_PCT + rngBelow(rng, VARIANCE_SPAN_PCT)
+
+  if (hitRoll >= aProf.accuracy) {
+    lastHitFlags = EventFlag.Miss
+    return 0
+  }
+
+  const isCrit = critRoll < aProf.critChance
   lastHitFlags = isCrit ? EventFlag.Crit : 0
 
   let dmg = countered
-  if (isCrit) dmg = ((dmg * CRIT_MULT_PCT) / 100) | 0
+  if (isCrit) dmg = ((dmg * (100 + aProf.critMultPct)) / 100) | 0
   dmg = ((dmg * variancePct) / 100) | 0
 
   return dmg > 0 ? dmg : 1

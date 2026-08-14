@@ -83,6 +83,30 @@ export interface ClassProfile {
   readonly isBlocker: boolean
   /** Бьёт по площади: урон получают все цели в радиусе splashRadius. */
   readonly splashRadius: number
+
+  /*
+   * ЧЕТЫРЕ СТАТА СЕМЕЙСТВА X/(X+Y) — ADR-011.
+   *
+   * Каждая пара противоборствующих статов считается по одному закону:
+   *   шанс попадания = accuracy / (accuracy + вражеское evasion)
+   *   шанс крита     = critChance / (critChance + вражеская tenacity)
+   * При равенстве — ровно 50%, дальше убывающая отдача. Ни один стат не даёт
+   * неуязвимости: чтобы срезать чужой шанс до 10%, нужно девятикратное
+   * превосходство.
+   *
+   * Зачем именно так, а не отдельные механики на каждый случай: игроку нужно
+   * понять ОДИН закон вместо трёх (столп 2), а нам — не выдумывать потолки,
+   * они получаются сами.
+   *
+   * Значения — измеренные статы ремейка, `01e_REBORN_NUMBERS.md` §2.
+   * От уровня НЕ зависят: в первоисточнике растут только HP, ATK и DEF.
+   */
+  readonly accuracy: number
+  readonly evasion: number
+  readonly critChance: number
+  readonly tenacity: number
+  /** прибавка урона при крите, проценты: 50 = ×1.5 */
+  readonly critMultPct: number
 }
 
 /**
@@ -113,6 +137,7 @@ export const CLASS_PROFILES: readonly ClassProfile[] = [
     range: 14, speed: 336,
     baseHp: 678, baseAtk: 69, baseDef: 22, attackPeriod: 30,
     laneBound: true, wDist: 65536, isHealer: false, isBlocker: false, splashRadius: 0,
+    accuracy: 80, evasion: 20, critChance: 10, tenacity: 90, critMultPct: 50,
   },
   {
     // Spearman: HP 653.4, ATK 89.1, DEF 17.6, AS 90, MS 5.
@@ -122,6 +147,7 @@ export const CLASS_PROFILES: readonly ClassProfile[] = [
     range: 20, speed: 336,
     baseHp: 653, baseAtk: 89, baseDef: 18, attackPeriod: 33,
     laneBound: true, wDist: 65536, isHealer: false, isBlocker: false, splashRadius: 0,
+    accuracy: 75, evasion: 15, critChance: 20, tenacity: 90, critMultPct: 50,
   },
   {
     // Shield Guard: HP 924, ATK 27.5, DEF 47, AS 100, MS 4.
@@ -132,6 +158,7 @@ export const CLASS_PROFILES: readonly ClassProfile[] = [
     range: 14, speed: 269,
     baseHp: 924, baseAtk: 28, baseDef: 47, attackPeriod: 30,
     laneBound: true, wDist: 65536, isHealer: false, isBlocker: true, splashRadius: 0,
+    accuracy: 80, evasion: 20, critChance: 10, tenacity: 100, critMultPct: 50,
   },
   {
     // Cavalry: HP 726, ATK 86.6, DEF 22.6, AS 90, MS 8 (в 1.6 раза быстрее
@@ -140,6 +167,7 @@ export const CLASS_PROFILES: readonly ClassProfile[] = [
     range: 16, speed: 538,
     baseHp: 726, baseAtk: 87, baseDef: 23, attackPeriod: 33,
     laneBound: true, wDist: 19661, isHealer: false, isBlocker: false, splashRadius: 0,
+    accuracy: 80, evasion: 10, critChance: 10, tenacity: 90, critMultPct: 50,
   },
   {
     // Archer: HP 550, ATK 59.4, DEF 13.2, AS 100, Range 30 (самая большая
@@ -148,6 +176,7 @@ export const CLASS_PROFILES: readonly ClassProfile[] = [
     range: 190, speed: 269,
     baseHp: 550, baseAtk: 59, baseDef: 13, attackPeriod: 30,
     laneBound: false, wDist: 65536, isHealer: false, isBlocker: false, splashRadius: 0,
+    accuracy: 90, evasion: 15, critChance: 20, tenacity: 90, critMultPct: 60,
   },
   {
     // Dwarven Musketeer: HP 550, ATK 102.6, AS 50, Range 25 — КОРОЧЕ лучника.
@@ -157,6 +186,7 @@ export const CLASS_PROFILES: readonly ClassProfile[] = [
     range: 160, speed: 202,
     baseHp: 550, baseAtk: 103, baseDef: 13, attackPeriod: 60,
     laneBound: false, wDist: 65536, isHealer: false, isBlocker: false, splashRadius: 0,
+    accuracy: 100, evasion: 10, critChance: 20, tenacity: 90, critMultPct: 60,
   },
   {
     // High Mage: HP 440, M.ATK 90.1, M.DEF 27.5, AS 90, Range 20.
@@ -172,6 +202,7 @@ export const CLASS_PROFILES: readonly ClassProfile[] = [
     // 32.5% всего урона в игре. Площадь вернётся вместе с системой скиллов —
     // с таймером и с капом по рядовым.
     laneBound: false, wDist: 65536, isHealer: false, isBlocker: false, splashRadius: 0,
+    accuracy: 80, evasion: 20, critChance: 20, tenacity: 75, critMultPct: 75,
   },
   {
     // Cleric: HP 418, M.ATK 45, AS 75, Range 20.
@@ -179,6 +210,7 @@ export const CLASS_PROFILES: readonly ClassProfile[] = [
     range: 130, speed: 336,
     baseHp: 418, baseAtk: 45, baseDef: 9, attackPeriod: 40,
     laneBound: false, wDist: 65536, isHealer: true, isBlocker: false, splashRadius: 0,
+    accuracy: 80, evasion: 15, critChance: 10, tenacity: 75, critMultPct: 50,
   },
 ]
 
@@ -353,8 +385,11 @@ export const MAX_ATTACKERS_RANGED = 6
 export const VARIANCE_MIN_PCT = 95
 export const VARIANCE_SPAN_PCT = 11 // [95, 105]
 
-export const CRIT_CHANCE_PCT = 10
-export const CRIT_MULT_PCT = 175
+/*
+ * Плоские крит-шанс и множитель УДАЛЕНЫ (ADR-011).
+ * Теперь и то и другое — статы класса: critChance против tenacity цели,
+ * critMultPct у атакующего. См. ClassProfile.
+ */
 
 /** Лимит боя — 02_GDD §3.4. */
 export const BATTLE_TIMEOUT_TICKS = 180 * TICK_HZ

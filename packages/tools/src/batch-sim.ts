@@ -31,22 +31,29 @@ import {
 const LEVEL = 10
 
 /**
- * Общее число бойцов у КАЖДОГО архетипа — одинаковое, и это критично.
+ * У КАЖДОГО архетипа одинаковое число СЛОТОВ и одинаковый размер отряда.
  *
- * БАГ, КОТОРЫЙ ЭТО ЧИНИТ (найден 2026-08-13). Раньше здесь стоял фиксированный
- * размер отряда SQUAD = 12 на слот. Но у архетипов разное число слотов: у моно
- * три, у «сбалансированного» шесть. То есть «сбалансированный» выходил на поле
- * с 72 бойцами против 36 у моно — вдвое большей армией.
+ * ДВЕ ОШИБКИ НОРМАЛИЗАЦИИ, обе исправлены здесь.
  *
- * При квадратичном законе Ланчестера двукратное численное превосходство даёт
- * не преимущество, а вайп. Поэтому весь отчёт BALANCE_01 («сбалансированный
- * и фронт+маги держат 92%») измерял не качество состава, а размер армии.
- * Вывод «смешанные составы доминируют над моно» был артефактом инструмента.
+ * Первая (найдена 2026-08-13). Стоял фиксированный отряд 12 на слот, а число
+ * слотов у архетипов различалось: у моно три, у «сбалансированного» шесть. То
+ * есть «сбалансированный» выходил с 72 бойцами против 36 — вдвое большей
+ * армией. При квадратичном законе Ланчестера это не преимущество, а вайп.
+ * Весь отчёт BALANCE_01 («сбалансированный держит 92%») измерял размер армии,
+ * а не качество состава.
  *
- * 48 делится на 3, 4 и 6 — все текущие размеры формаций дают целый отряд.
- * Добавляя архетип с другим числом слотов, проверь делимость.
+ * Вторая (найдена 2026-08-14). Уравняли общее число бойцов — и доминировать
+ * стали ВСЕ составы на шесть слотов, независимо от содержания. Причина:
+ * слот выставляет героя И отряд, а герой сильнее миньона на
+ * HERO_STAT_BONUS_PCT. При равном числе бойцов шесть слотов дают шесть героев
+ * против трёх — то есть снова сравнивался не состав.
+ *
+ * Правильная нормализация — по СЛОТАМ, и она же совпадает с игрой: сетка даёт
+ * фиксированное число слотов, оба игрока их заполняют, размер отряда растёт от
+ * прогрессии одинаково. Поэтому у всех архетипов ровно SLOTS слотов.
  */
-const TOTAL_UNITS = 48
+const SLOTS = 6
+const SQUAD = 7
 
 function arg(name: string, def: number): number {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`))
@@ -58,7 +65,7 @@ function argStr(name: string): string | null {
 }
 
 const slot = (lane: number, rank: number, cls: number): Slot => ({
-  lane, rank, cls, level: LEVEL, squad: 0,
+  lane, rank, cls, level: LEVEL, squad: SQUAD,
 })
 
 /**
@@ -66,18 +73,13 @@ const slot = (lane: number, rank: number, cls: number): Slot => ({
  * Вызывается один раз при сборке архетипа, а не в горячем цикле.
  */
 function equalize(slots: Slot[]): Formation {
-  // −1, потому что слот выставляет на поле героя И его отряд. Без этого
-  // состав из шести слотов выходил с шестью героями против трёх у моно при
-  // формально равном числе миньонов — и выигрывал у всех 100% именно этим.
-  const squad = ((TOTAL_UNITS / slots.length) | 0) - 1
-  if ((squad + 1) * slots.length !== TOTAL_UNITS) {
+  if (slots.length !== SLOTS) {
     throw new Error(
-      `формация из ${slots.length} слотов не делит ${TOTAL_UNITS} нацело — ` +
-        'архетипы обязаны выходить равной численностью, иначе сравнивается ' +
-        'размер армии, а не состав',
+      `формация из ${slots.length} слотов, а нужно ровно ${SLOTS} — иначе ` +
+        'сравнивается число героев, а не состав (см. комментарий к SLOTS)',
     )
   }
-  return { slots: slots.map((s) => ({ ...s, squad })) }
+  return { slots }
 }
 
 /**
@@ -91,6 +93,14 @@ interface Archetype {
   readonly key: string
   readonly name: string
   readonly formation: Formation
+  /**
+   * Моно-составы — это диагностические ЗОНДЫ, а не то, что кто-то соберёт.
+   * «Шесть лекарей» обязаны проигрывать всем и всегда: это правильная работа
+   * модели, а не дефект баланса. Поэтому коридор 40–60% меряется только по
+   * смешанным составам (ADR-010), а зонды остаются как проверка, что каждый
+   * класс делает то, что должен.
+   */
+  readonly isProbe: boolean
 }
 
 /** Моно-состав: три слота одного класса в переднем ряду. */
@@ -98,7 +108,8 @@ function mono(cls: number): Archetype {
   return {
     key: `mono-${CLASS_PROFILES[cls]!.name.toLowerCase()}`,
     name: `моно ${CLASS_PROFILES[cls]!.name}`,
-    formation: equalize([0, 1, 2].map((lane) => slot(lane, 0, cls))),
+    formation: equalize([0, 1, 2].flatMap((lane) => [slot(lane, 0, cls), slot(lane, 1, cls)])),
+    isProbe: true,
   }
 }
 
@@ -108,33 +119,41 @@ const ARCHETYPES: Archetype[] = [
     key: 'wall-shot',
     name: 'стена + стрелки',
     formation: equalize([
-        slot(0, 0, UnitClass.Paviser), slot(1, 0, UnitClass.Paviser),
-        slot(0, 3, UnitClass.Arbalist), slot(1, 3, UnitClass.Arbalist),
+      slot(0, 0, UnitClass.Paviser), slot(1, 0, UnitClass.Paviser),
+      slot(2, 0, UnitClass.Paviser), slot(0, 3, UnitClass.Arbalist),
+      slot(1, 3, UnitClass.Arbalist), slot(2, 3, UnitClass.Arbalist),
     ]),
+    isProbe: false,
   },
   {
     key: 'line-mage',
     name: 'фронт + маги',
     formation: equalize([
-        slot(0, 0, UnitClass.Infantry), slot(1, 0, UnitClass.Infantry),
-        slot(0, 3, UnitClass.Mage), slot(1, 3, UnitClass.Mage),
+      slot(0, 0, UnitClass.Infantry), slot(1, 0, UnitClass.Infantry),
+      slot(2, 0, UnitClass.Infantry), slot(0, 3, UnitClass.Mage),
+      slot(1, 3, UnitClass.Mage), slot(2, 3, UnitClass.Mage),
     ]),
+    isProbe: false,
   },
   {
     key: 'rush',
     name: 'прорыв кавалерией',
     formation: equalize([
-        slot(0, 0, UnitClass.Cavalry), slot(2, 0, UnitClass.Cavalry),
-        slot(4, 0, UnitClass.Cavalry), slot(1, 1, UnitClass.Cavalry),
+      slot(0, 0, UnitClass.Cavalry), slot(2, 0, UnitClass.Cavalry),
+      slot(4, 0, UnitClass.Cavalry), slot(1, 1, UnitClass.Cavalry),
+      slot(3, 1, UnitClass.Cavalry), slot(2, 2, UnitClass.Cavalry),
     ]),
+    isProbe: false,
   },
   {
     key: 'anti-cav',
     name: 'анти-кавалерия',
     formation: equalize([
-        slot(0, 0, UnitClass.Pikeman), slot(1, 0, UnitClass.Pikeman),
-        slot(2, 0, UnitClass.Pikeman), slot(1, 2, UnitClass.Archer),
+      slot(0, 0, UnitClass.Pikeman), slot(1, 0, UnitClass.Pikeman),
+      slot(2, 0, UnitClass.Pikeman), slot(0, 2, UnitClass.Archer),
+      slot(1, 2, UnitClass.Archer), slot(2, 2, UnitClass.Archer),
     ]),
+    isProbe: false,
   },
   {
     key: 'balanced',
@@ -144,6 +163,57 @@ const ARCHETYPES: Archetype[] = [
         slot(2, 0, UnitClass.Pikeman), slot(1, 2, UnitClass.Archer),
         slot(0, 2, UnitClass.Mage), slot(2, 3, UnitClass.Healer),
     ]),
+    isProbe: false,
+  },
+  {
+    key: 'archers-behind-mages',
+    name: 'лучники за магами',
+    formation: equalize([
+      slot(0, 0, UnitClass.Infantry), slot(1, 0, UnitClass.Infantry),
+      slot(0, 1, UnitClass.Mage), slot(1, 1, UnitClass.Mage),
+      slot(0, 3, UnitClass.Archer), slot(1, 3, UnitClass.Archer),
+    ]),
+    isProbe: false,
+  },
+  {
+    key: 'flank-dive',
+    name: 'обход по пустому лейну',
+    formation: equalize([
+      slot(1, 0, UnitClass.Paviser), slot(2, 0, UnitClass.Paviser),
+      slot(1, 2, UnitClass.Arbalist), slot(2, 2, UnitClass.Arbalist),
+      slot(4, 0, UnitClass.Cavalry), slot(4, 1, UnitClass.Cavalry),
+    ]),
+    isProbe: false,
+  },
+  {
+    key: 'sustain',
+    name: 'стена с лечением',
+    formation: equalize([
+      slot(0, 0, UnitClass.Paviser), slot(1, 0, UnitClass.Paviser),
+      slot(2, 0, UnitClass.Infantry), slot(0, 2, UnitClass.Archer),
+      slot(1, 3, UnitClass.Healer), slot(2, 3, UnitClass.Healer),
+    ]),
+    isProbe: false,
+  },
+  {
+    key: 'spear-shot',
+    name: 'копья и стрелки',
+    formation: equalize([
+      slot(0, 0, UnitClass.Pikeman), slot(1, 0, UnitClass.Pikeman),
+      slot(2, 0, UnitClass.Pikeman), slot(0, 3, UnitClass.Archer),
+      slot(1, 3, UnitClass.Archer), slot(2, 3, UnitClass.Arbalist),
+    ]),
+    isProbe: false,
+  },
+  {
+    key: 'deep-line',
+    name: 'тройная линия',
+    formation: equalize([
+      slot(0, 0, UnitClass.Paviser), slot(1, 0, UnitClass.Infantry),
+      slot(2, 0, UnitClass.Pikeman), slot(0, 2, UnitClass.Arbalist),
+      slot(1, 2, UnitClass.Mage), slot(2, 2, UnitClass.Archer),
+    ]),
+    isProbe: false,
   },
 ]
 
@@ -266,8 +336,28 @@ function main(): void {
       `  ← цель ≤ 15`,
   )
 
+  // --- коридор 40-60%, ТОЛЬКО по смешанным составам ---
+  // Зонды («шесть лекарей», «шесть павиз») из этой метрики исключены: они
+  // обязаны проигрывать всегда, и включать их значило бы требовать, чтобы
+  // лекарь убивал.
+  let mixIn = 0
+  let mixTotal = 0
+  for (let i = 0; i < m; i++) {
+    if (ARCHETYPES[i]!.isProbe) continue
+    for (let j = 0; j < m; j++) {
+      if (i === j || ARCHETYPES[j]!.isProbe) continue
+      mixTotal++
+      const v = wr[i]![j]!
+      if (v >= 0.4 && v <= 0.6) mixIn++
+    }
+  }
+  console.log(
+    `КОРИДОР 40-60% (только смешанные составы): ${mixIn} пар из ${mixTotal} ` +
+      `(${((mixIn * 100) / mixTotal).toFixed(0)}%)`,
+  )
+
   // --- кто вне коридора ---
-  console.log('\nВЫПАДАЮТ ИЗ КОРИДОРА 40-60% (справочно, не DoD):\n')
+  console.log('\nВЫПАДАЮТ ИЗ КОРИДОРА 40-60% (все пары, справочно):\n')
   const bad: Array<[string, string, number]> = []
   for (let i = 0; i < m; i++) {
     for (let j = 0; j < m; j++) {
