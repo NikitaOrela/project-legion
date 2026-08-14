@@ -1,12 +1,30 @@
 /**
  * Бой: урон, крит, контры, мораль.
  *
- * ФОРМУЛА — DECISIONS.md ADR-003 (процентная модель из 02_GDD §3.7):
- *   raw       = ATK × C[attacker][defender]
- *   mitigated = raw × K / (K + DEF),  K = 400 + 15 × level
- *   damage    = max(1, mitigated × crit × variance)
+ * ФОРМУЛА — DECISIONS.md ADR-009 (заменила ADR-003):
+ *   mitigated = ATK² / (ATK + DEF)
+ *   countered = mitigated × C[attacker][defender]
+ *   damage    = max(1, countered × crit × variance)
  *
- * Крит применяется ПОСЛЕ митигации — это подтверждено замерами оригинала.
+ * ПОЧЕМУ НЕ K/(K+DEF), КАК БЫЛО. Там K = 400 + 15×level — внешняя константа,
+ * которую нужно подбирать под каждый диапазон уровней, иначе на 200-м уровне
+ * защита перестаёт значить хоть что-то. Здесь роль K играет сама атака
+ * нападающего, и модель самонормируется: при росте ATK и DEF в одинаковое
+ * число раз урон растёт линейно, HP тоже — время убийства остаётся постоянным
+ * по всей прогрессии. Подгонки не нужно вообще.
+ *
+ * Второе свойство важнее первого: слабый атакующий наказан КВАДРАТИЧНО.
+ * Павиза с ATK 28 против DEF 47 наносит 28²/75 = 10, то есть 37% своей и без
+ * того малой атаки. Танки перестают разменивать друг друга и начинают
+ * стопорить бой — а это прямое противодействие петле Ланчестера, из-за которой
+ * 156 пар архетипов из 156 выпадали из коридора 40–60% (BALANCE_01).
+ *
+ * Источник: `/en/stats` ремейка, подтверждено независимо двумя разборами
+ * сообщества (`docs/01e_REBORN_NUMBERS.md`).
+ *
+ * Крит применяется ПОСЛЕ митигации — подтверждено замерами оригинала 2015 года
+ * (рост защиты на 112 просадил обычный удар на 9.57, крит на 18.73; отношение
+ * 1.96 при крит-множителе ×2 означает, что множитель идёт последним).
  *
  * ПОРЯДОК ПОТРЕБЛЕНИЯ RNG ФИКСИРОВАН: сначала бросок крита, потом разброс.
  * Менять порядок нельзя — сломаются все golden-реплеи.
@@ -27,13 +45,17 @@ import { WX_SHIFT } from '../fixed.js'
 import type { SpatialHash } from '../spatial.js'
 import { cellRange } from '../spatial.js'
 import {
+  BLOCK_RADIUS,
   CLASS_PROFILES,
   COUNTER_PCT,
+  HOLD_DEF_STEP_PCT,
+  HOLD_MAX_STACKS,
+  HOLD_PERIOD,
   CRIT_CHANCE_PCT,
   CRIT_MULT_PCT,
-  MITIGATION_K_BASE,
-  MITIGATION_K_PER_LEVEL,
+  MAGE_SPLASH_PERIOD,
   NO_TARGET,
+  SPLASH_PCT,
   VARIANCE_MIN_PCT,
   VARIANCE_SPAN_PCT,
 } from '../types.js'
@@ -95,10 +117,56 @@ export function runCombat(
 
     applyHit(w, rng, stats, id, t, ev, 0)
 
-    // Маг задевает всех вокруг цели. Порядок обхода — по возрастанию entityId
-    // внутри ячеек хэша, иначе RNG потребляется в непредсказуемом порядке.
-    if (prof.splashRadius > 0) {
+    /*
+     * Площадной удар мага — СКИЛЛ ПО ТАЙМЕРУ, а не свойство обычной атаки.
+     *
+     * Так было не всегда, и прежний вариант — сплэш на каждой атаке — оказался
+     * главным источником дисбаланса. Замер BALANCE_01: маг давал 32.5% всего
+     * урона в игре при нуле полученного. Причина арифметическая: класс,
+     * который бьёт по площади каждый удар, умножает свой урон на плотность
+     * вражеского строя. Чем плотнее стоит противник, тем быстрее он тает, и
+     * петля Ланчестера получает второй источник питания помимо численности.
+     *
+     * Это была наша выдумка, а не механика первоисточника. Там базовая атака
+     * мага одноцелевая, а площадь приходит скиллом с таймером и вдобавок режется
+     * по рядовым бойцам. Возвращаемся к этой модели.
+     *
+     * Кулдаун тикает в runCombat, а не отдельной системой: скилл — это часть
+     * боя, и лишний проход по всем живым юнитам стоил бы такта в горячем цикле.
+     */
+    if (prof.splashRadius > 0 && w.skillCd[id]! <= 0) {
+      w.skillCd[id] = MAGE_SPLASH_PERIOD
       applySplash(w, rng, stats, sh, id, t, prof.splashRadius, ev)
+    }
+  }
+
+  // Кулдауны скиллов и стаки Hold Ground — отдельным проходом по alive, строго
+  // по возрастанию entityId, чтобы порядок не зависел от того, кто в этом тике
+  // атаковал. Проход без RNG, поэтому на детерминизм он не влияет вовсе.
+  for (let i = 0; i < w.aliveCount; i++) {
+    const id = w.alive[i]!
+    if (w.skillCd[id]! > 0) w.skillCd[id]!--
+
+    if (!CLASS_PROFILES[w.cls[id]!]!.isBlocker) continue
+
+    const t = w.target[id]!
+    const engaged =
+      t !== NO_TARGET &&
+      w.hp[t]! > 0 &&
+      distSqUnits(w.px[id]!, w.py[id]!, w.px[t]!, w.py[t]!) <= BLOCK_RADIUS * BLOCK_RADIUS
+
+    if (!engaged) {
+      w.defStacks[id] = 0
+      w.holdTimer[id] = 0
+      continue
+    }
+    if (w.defStacks[id]! >= HOLD_MAX_STACKS) continue
+    const timer = w.holdTimer[id]! + 1
+    if (timer >= HOLD_PERIOD) {
+      w.holdTimer[id] = 0
+      w.defStacks[id] = w.defStacks[id]! + 1
+    } else {
+      w.holdTimer[id] = timer
     }
   }
 }
@@ -116,7 +184,15 @@ function applyHit(
   extraFlags: number,
 ): void {
   const before = w.hp[victim]!
-  const dmg = computeDamage(w, rng, attacker, victim)
+  let dmg = computeDamage(w, rng, attacker, victim)
+  // Сплэш бьёт слабее основной цели — см. SPLASH_PCT.
+  // Срез ПОСЛЕ computeDamage, а не внутри: порядок потребления RNG обязан
+  // остаться одинаковым для основной цели и для задетых, иначе golden-реплеи
+  // разъезжаются при любом изменении плотности строя.
+  if ((extraFlags & EventFlag.Splash) !== 0) {
+    dmg = ((dmg * SPLASH_PCT) / 100) | 0
+    if (dmg < 1) dmg = 1
+  }
   w.hp[victim] = before - dmg
   stats.dealt[attacker] = stats.dealt[attacker]! + dmg
   stats.taken[victim] = stats.taken[victim]! + dmg
@@ -209,19 +285,25 @@ function computeDamage(
 
   // Мораль: отряд погибшего героя бьёт слабее (02_GDD §3.9)
   const atkEff = ((w.atk[attacker]! * w.moralePct[attacker]!) / 100) | 0
-  const defEff = ((w.def[defender]! * w.moralePct[defender]!) / 100) | 0
+  // Мораль и стаки Hold Ground — оба множителя на защиту, оба целочисленные
+  const holdPct = 100 + HOLD_DEF_STEP_PCT * w.defStacks[defender]!
+  const defEff =
+    ((((w.def[defender]! * w.moralePct[defender]!) / 100) | 0) * holdPct / 100) | 0
 
-  const raw = ((atkEff * COUNTER_PCT[aCls]![dCls]!) / 100) | 0
+  // ATK² / (ATK + DEF) — целочисленно. atkEff на 200 уровне порядка 1500,
+  // квадрат ~2.2e6, до предела Int32 (2.1e9) три порядка запаса.
+  const mitigated = ((atkEff * atkEff) / (atkEff + defEff)) | 0
 
-  const k = MITIGATION_K_BASE + MITIGATION_K_PER_LEVEL * w.level[defender]!
-  const mitigated = ((raw * k) / (k + defEff)) | 0
+  // Контр — после митигации. Если домножать атаку ДО, множитель попадает
+  // в квадрат числителя и +20% превращается в +44%.
+  const countered = ((mitigated * COUNTER_PCT[aCls]![dCls]!) / 100) | 0
 
   // ПОРЯДОК ПОТРЕБЛЕНИЯ RNG — не менять
   const isCrit = rngBelow(rng, 100) < CRIT_CHANCE_PCT
   const variancePct = VARIANCE_MIN_PCT + rngBelow(rng, VARIANCE_SPAN_PCT)
   lastHitFlags = isCrit ? EventFlag.Crit : 0
 
-  let dmg = mitigated
+  let dmg = countered
   if (isCrit) dmg = ((dmg * CRIT_MULT_PCT) / 100) | 0
   dmg = ((dmg * variancePct) / 100) | 0
 

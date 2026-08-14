@@ -29,15 +29,17 @@ import {
   BLOCK_RADIUS,
   BLOCK_TIMEOUT_TICKS,
   CLASS_PROFILES,
-  COUNTER_PCT,
+  MAX_ATTACKERS_MELEE,
+  MAX_ATTACKERS_RANGED,
   NO_TARGET,
+  PREF_TARGET,
   RETARGET_PERIOD,
+  UnitClass,
+  W_PREF,
 } from '../types.js'
 
-const W_COUNTER = 40 // Q16.16 * 0.4 упрощено до целых весов score
 const W_HERO = 15
 const W_LOWHP = 20
-const W_AFFINITY = 60
 
 const range4 = new Int32Array(4)
 
@@ -53,8 +55,32 @@ function searchRadius(cls: number): number {
   return p.laneBound ? 260 : p.range + 60
 }
 
+/**
+ * Сколько живых юнитов сейчас держат целью каждую сущность.
+ *
+ * Модульный буфер, а не поле World: он полностью перестраивается в начале
+ * каждого тика из w.target, поэтому не является состоянием симуляции и не
+ * участвует в хэшировании. Пересборка с нуля — обязательна: инкрементальное
+ * ведение счётчиков накопило бы расхождение при смертях.
+ */
+let attackerCount = new Int32Array(0)
+
+function rebuildAttackerCount(w: World): void {
+  if (attackerCount.length < w.count) attackerCount = new Int32Array(w.count)
+  else attackerCount.fill(0, 0, w.count)
+  for (let i = 0; i < w.aliveCount; i++) {
+    const t = w.target[w.alive[i]!]!
+    if (t !== NO_TARGET) attackerCount[t] = attackerCount[t]! + 1
+  }
+}
+
+function attackerCap(cls: number): number {
+  return CLASS_PROFILES[cls]!.laneBound ? MAX_ATTACKERS_MELEE : MAX_ATTACKERS_RANGED
+}
+
 export function runTargeting(w: World, sh: SpatialHash, ev: EventBuffer): void {
   const phase = w.tick % RETARGET_PERIOD
+  rebuildAttackerCount(w)
 
   for (let i = 0; i < w.aliveCount; i++) {
     const self = w.alive[i]!
@@ -76,7 +102,10 @@ export function runTargeting(w: World, sh: SpatialHash, ev: EventBuffer): void {
     if (self % RETARGET_PERIOD !== phase) {
       // цель могла умереть между ретаргетами — сбрасываем сразу
       const t = w.target[self]!
-      if (t !== NO_TARGET && w.hp[t]! <= 0) w.target[self] = NO_TARGET
+      if (t !== NO_TARGET && w.hp[t]! <= 0) {
+        w.target[self] = NO_TARGET
+        attackerCount[t] = attackerCount[t]! - 1
+      }
       if (w.target[self] !== NO_TARGET) continue
     }
 
@@ -86,14 +115,26 @@ export function runTargeting(w: World, sh: SpatialHash, ev: EventBuffer): void {
       continue
     }
 
+    // Освобождаем прежнюю цель до выбора новой: иначе юнит конкурирует сам
+    // с собой за место и не может переподтвердить текущую цель, когда та
+    // заполнена ровно до предела.
+    const prev = w.target[self]!
+    if (prev !== NO_TARGET) attackerCount[prev] = attackerCount[prev]! - 1
+
     const t = pickTarget(w, sh, self)
     w.target[self] = t
+    if (t !== NO_TARGET) attackerCount[t] = attackerCount[t]! + 1
 
     // Ближний бой залипает на павизе, если та рядом
     if (t !== NO_TARGET && prof.range <= 40) {
       const pav = findBlocker(w, sh, self)
-      if (pav !== NO_TARGET) {
+      if (pav !== NO_TARGET && pav !== t) {
         const wasFree = w.blockedBy[self]! < 0
+        // Блокировка перебивает выбор — переносим и счётчик атакующих.
+        // Лимит фронта здесь намеренно НЕ проверяется: в том и смысл павизы,
+        // что она собирает на себя больше врагов, чем обычный юнит.
+        attackerCount[t] = attackerCount[t]! - 1
+        attackerCount[pav] = attackerCount[pav]! + 1
         w.target[self] = pav
         w.blockedBy[self] = pav
         w.blockTimer[self] = BLOCK_TIMEOUT_TICKS
@@ -182,6 +223,7 @@ function pickTarget(w: World, sh: SpatialHash, self: number): number {
   const sx = w.px[self]!
   const sy = w.py[self]!
   const radius = searchRadius(cls)
+  const cap = attackerCap(cls)
 
   cellRange(sh, sx, sy, radius, range4)
   const cx0 = range4[0]!
@@ -194,6 +236,9 @@ function pickTarget(w: World, sh: SpatialHash, self: number): number {
   // Проход 1 — только свой лейн (для laneBound). Проход 2 — весь радиус.
   let bestIdAnyLane = NO_TARGET
   let bestScoreAnyLane = -0x7fffffff
+  // Для кавалерии: самая ДАЛЬНЯЯ цель за пределами своего лейна (см. ниже)
+  let farId = NO_TARGET
+  let farD2 = -1
 
   for (let cy = cy0; cy <= cy1; cy++) {
     const rowBase = cy * sh.cols
@@ -205,6 +250,10 @@ function pickTarget(w: World, sh: SpatialHash, self: number): number {
         const other = sh.dense[k]!
         if (w.team[other]! === myTeam) continue
         if (w.hp[other]! <= 0) continue
+
+        // Фронт занят — цель не берём. Это и есть переход от квадратичного
+        // закона Ланчестера к линейному, см. MAX_ATTACKERS_* в types.ts.
+        if (attackerCount[other]! >= cap) continue
 
         const d2 = distSqUnits(sx, sy, w.px[other]!, w.py[other]!)
         if (d2 > radius * radius) continue
@@ -224,19 +273,50 @@ function pickTarget(w: World, sh: SpatialHash, self: number): number {
             bestScore = score
             bestId = other
           }
+        } else if (d2 > farD2 || (d2 === farD2 && other < farId)) {
+          farD2 = d2
+          farId = other
         }
       }
     }
   }
 
   // Лейновая изоляция: melee выходит из лейна только когда свой зачищен
-  if (prof.laneBound) return bestId !== NO_TARGET ? bestId : bestIdAnyLane
+  if (prof.laneBound) {
+    if (bestId !== NO_TARGET) return bestId
+
+    /*
+     * Кавалерия с пустым лейном идёт в САМУЮ ДАЛЬНЮЮ цель чужого лейна, а не
+     * в ближайшую. Дословное правило ремейка, и оно тут не косметика.
+     *
+     * Ближайшая цель означала бы, что конница при пустом лейне просто
+     * сворачивает к соседнему фронту и вязнет в нём — то есть ведёт себя как
+     * медленная пехота. Самая дальняя означает нырок в тыл: конница
+     * проламывается сквозь строй к стрелкам и магам. Отсюда же берётся
+     * ценность пустого лейна в расстановке — игрок ОТКРЫВАЕТ коридор
+     * намеренно, чтобы запустить по нему свою конницу.
+     */
+    if (w.cls[self]! === UnitClass.Cavalry && farId !== NO_TARGET) return farId
+    return bestIdAnyLane
+  }
   return bestIdAnyLane
 }
 
 /**
- * Взвешенный score. Целочисленный: дистанция входит обратной величиной,
- * масштабированной так, чтобы веса были сравнимы.
+ * Взвешенный score.
+ *
+ * ЧТО ИЗМЕНИЛОСЬ В ADR-009. Раньше здесь стоял общий для всех классов
+ * взвешенный счёт, где вклад контра брался из плотной матрицы: каждый юнит
+ * чуть-чуть предпочитал того, кого чуть-чуть лучше бьёт. На поле это
+ * выглядело как отсутствие всякой логики — все дрались с ближайшим, потому
+ * что дистанция перевешивала слабые предпочтения.
+ *
+ * Теперь у класса есть ОДНА названная добыча (PREF_TARGET), и вес у неё
+ * большой. Копейщик не «слегка склонен» к кавалерии — он за ней идёт.
+ * Игрок видит это на поле за один бой и может на это рассчитывать.
+ *
+ * Целочисленный: дистанция входит обратной величиной, масштабированной так,
+ * чтобы веса были сравнимы.
  */
 function scoreTarget(
   w: World,
@@ -254,11 +334,10 @@ function scoreTarget(
   const distTerm = ((65536 / (1 + dApprox)) | 0)
   const distScore = ((distTerm * wDist) / 65536) | 0
 
-  const affinity = myCls === otherCls ? W_AFFINITY : 0
-  const counter = ((COUNTER_PCT[myCls]![otherCls]! - 100) * W_COUNTER) / 100 | 0
+  const pref = PREF_TARGET[myCls]! === otherCls ? W_PREF : 0
   const hero = w.isHero[other]! === 1 ? W_HERO : 0
   const lowHp =
     ((w.hpMax[other]! - w.hp[other]!) * W_LOWHP) / (w.hpMax[other]! || 1) | 0
 
-  return distScore + affinity + counter + hero + lowHp
+  return distScore + pref + hero + lowHp
 }

@@ -46,7 +46,7 @@ export function hashWorld(w: World, rngHi: number, rngLo: number): StateHash {
     hp1 = fnv(hp1, w.py[id]!)
     hh = fnv(fnv(hh, id), w.hp[id]!)
     hh = fnv(hh, w.moralePct[id]!)
-    hc = fnv(fnv(hc, id), w.cd[id]!)
+    hc = fnv(fnv(fnv(fnv(hc, id), w.cd[id]!), w.skillCd[id]!), w.defStacks[id]!)
     ht = fnv(fnv(ht, id), w.target[id]!)
   }
 

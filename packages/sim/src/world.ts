@@ -34,6 +34,24 @@ export interface World {
   readonly lane: Int32Array
   /** тиков до следующей атаки */
   readonly cd: Int32Array
+  /**
+   * Кулдаун скилла в тиках, отдельно от кулдауна обычной атаки.
+   *
+   * В первоисточнике скиллы срабатывают ПО ТАЙМЕРУ («every 8 seconds»),
+   * а не по числу атак и не по чистому шансу. Это принципиально: привязка
+   * к числу атак делает скорость атаки самоусиливающимся статом (она разгоняет
+   * и урон, и частоту скиллов одновременно), и в ремейке это привело к тому,
+   * что гайды прямо советуют качать только его. Таймер разрывает эту связь.
+   */
+  readonly skillCd: Int32Array
+  /**
+   * Накопленные стаки защиты павизы (механика Hold Ground первоисточника):
+   * пока юнит стоит в контакте с врагом, его защита растёт ступенями.
+   * Обнуляется, как только контакт разорван.
+   */
+  readonly defStacks: Int32Array
+  /** Отсчёт до следующей ступени Hold Ground, в тиках. */
+  readonly holdTimer: Int32Array
   readonly target: Int32Array
   /** 1 — герой, 0 — миньон. Герои приоритетнее как цель и несут скилл */
   readonly isHero: Int32Array
@@ -73,6 +91,9 @@ export function createWorld(cap: number, geometry: Geometry): World {
     team: new Int32Array(cap),
     lane: new Int32Array(cap),
     cd: new Int32Array(cap),
+    skillCd: new Int32Array(cap),
+    defStacks: new Int32Array(cap),
+    holdTimer: new Int32Array(cap),
     target: new Int32Array(cap).fill(NO_TARGET),
     isHero: new Int32Array(cap),
     owner: new Int32Array(cap).fill(-1),

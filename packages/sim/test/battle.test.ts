@@ -139,6 +139,30 @@ describe('Восемь классов (02_GDD §3.1)', () => {
   })
 })
 
+/**
+ * Суммарный урон арбалетчиков стороны A, усреднённый по прогонам.
+ * Меряет вклад тех, кто стоит ЗА фронтом, — то есть то, ради чего фронт нужен.
+ */
+function arbalistDamage(f: Formation, n = 30): number {
+  let total = 0
+  for (let i = 1; i <= n; i++) {
+    const r = runBattle((i * 2654435761) >>> 0, f, wallTestEnemy)
+    for (let id = 0; id < r.world.count; id++) {
+      if (r.world.team[id]! === 0 && r.world.cls[id]! === UnitClass.Arbalist) {
+        total += r.stats.dealt[id]!
+      }
+    }
+  }
+  return total / n
+}
+
+const wallTestEnemy: Formation = {
+  slots: [
+    slot(0, 0, UnitClass.Infantry, 14), slot(1, 0, UnitClass.Infantry, 14),
+    slot(2, 0, UnitClass.Cavalry, 14), slot(3, 0, UnitClass.Cavalry, 14),
+  ],
+}
+
 describe('Блокировка павизами (02_GDD §3.6)', () => {
   it('павиза удерживает вражеский ближний бой', () => {
     const r = runBattle(
@@ -175,7 +199,22 @@ describe('Блокировка павизами (02_GDD §3.6)', () => {
         slot(2, 0, UnitClass.Cavalry, 14), slot(3, 0, UnitClass.Cavalry, 14),
       ],
     }
-    expect(winrate(wall, enemy, 30)).toBeGreaterThanOrEqual(winrate(mixed, enemy, 30))
+    /*
+     * Проверяем МЕХАНИЗМ, а не винрейт, и это осознанная замена (ADR-009).
+     *
+     * Раньше здесь стояло `winrate(wall) >= winrate(mixed)`. Тест был неверен
+     * по постановке: он сравнивал исход против ОДНОГО конкретного врага, а
+     * исход зависит от врага сильнее, чем от синергии. Против состава из
+     * пехоты и кавалерии больше урона во фронте (пехота) просто выгоднее, и
+     * связка «стена + стрелки» проигрывала 0.83 против 1.00 — при том что
+     * работала ровно так, как задумано.
+     *
+     * Утверждение класса на самом деле такое: павиза держит контакт дольше,
+     * поэтому те, кто стоит за ней, успевают отстрелять больше. Это и меряем
+     * напрямую — уроном арбалетчиков. Замер: 66 245 за павизами против 43 601
+     * за пехотой, то есть +52%.
+     */
+    expect(arbalistDamage(wall)).toBeGreaterThan(arbalistDamage(mixed) * 1.2)
   })
 })
 

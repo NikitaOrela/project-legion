@@ -29,7 +29,24 @@ import {
 } from '@mw/sim'
 
 const LEVEL = 10
-const SQUAD = 12
+
+/**
+ * Общее число бойцов у КАЖДОГО архетипа — одинаковое, и это критично.
+ *
+ * БАГ, КОТОРЫЙ ЭТО ЧИНИТ (найден 2026-08-13). Раньше здесь стоял фиксированный
+ * размер отряда SQUAD = 12 на слот. Но у архетипов разное число слотов: у моно
+ * три, у «сбалансированного» шесть. То есть «сбалансированный» выходил на поле
+ * с 72 бойцами против 36 у моно — вдвое большей армией.
+ *
+ * При квадратичном законе Ланчестера двукратное численное превосходство даёт
+ * не преимущество, а вайп. Поэтому весь отчёт BALANCE_01 («сбалансированный
+ * и фронт+маги держат 92%») измерял не качество состава, а размер армии.
+ * Вывод «смешанные составы доминируют над моно» был артефактом инструмента.
+ *
+ * 48 делится на 3, 4 и 6 — все текущие размеры формаций дают целый отряд.
+ * Добавляя архетип с другим числом слотов, проверь делимость.
+ */
+const TOTAL_UNITS = 48
 
 function arg(name: string, def: number): number {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`))
@@ -41,8 +58,27 @@ function argStr(name: string): string | null {
 }
 
 const slot = (lane: number, rank: number, cls: number): Slot => ({
-  lane, rank, cls, level: LEVEL, squad: SQUAD,
+  lane, rank, cls, level: LEVEL, squad: 0,
 })
+
+/**
+ * Разложить TOTAL_UNITS поровну по слотам формации.
+ * Вызывается один раз при сборке архетипа, а не в горячем цикле.
+ */
+function equalize(slots: Slot[]): Formation {
+  // −1, потому что слот выставляет на поле героя И его отряд. Без этого
+  // состав из шести слотов выходил с шестью героями против трёх у моно при
+  // формально равном числе миньонов — и выигрывал у всех 100% именно этим.
+  const squad = ((TOTAL_UNITS / slots.length) | 0) - 1
+  if ((squad + 1) * slots.length !== TOTAL_UNITS) {
+    throw new Error(
+      `формация из ${slots.length} слотов не делит ${TOTAL_UNITS} нацело — ` +
+        'архетипы обязаны выходить равной численностью, иначе сравнивается ' +
+        'размер армии, а не состав',
+    )
+  }
+  return { slots: slots.map((s) => ({ ...s, squad })) }
+}
 
 /**
  * Архетип — это осмысленный состав, а не просто класс.
@@ -62,7 +98,7 @@ function mono(cls: number): Archetype {
   return {
     key: `mono-${CLASS_PROFILES[cls]!.name.toLowerCase()}`,
     name: `моно ${CLASS_PROFILES[cls]!.name}`,
-    formation: { slots: [0, 1, 2].map((lane) => slot(lane, 0, cls)) },
+    formation: equalize([0, 1, 2].map((lane) => slot(lane, 0, cls))),
   }
 }
 
@@ -71,53 +107,43 @@ const ARCHETYPES: Archetype[] = [
   {
     key: 'wall-shot',
     name: 'стена + стрелки',
-    formation: {
-      slots: [
+    formation: equalize([
         slot(0, 0, UnitClass.Paviser), slot(1, 0, UnitClass.Paviser),
         slot(0, 3, UnitClass.Arbalist), slot(1, 3, UnitClass.Arbalist),
-      ],
-    },
+    ]),
   },
   {
     key: 'line-mage',
     name: 'фронт + маги',
-    formation: {
-      slots: [
+    formation: equalize([
         slot(0, 0, UnitClass.Infantry), slot(1, 0, UnitClass.Infantry),
         slot(0, 3, UnitClass.Mage), slot(1, 3, UnitClass.Mage),
-      ],
-    },
+    ]),
   },
   {
     key: 'rush',
     name: 'прорыв кавалерией',
-    formation: {
-      slots: [
+    formation: equalize([
         slot(0, 0, UnitClass.Cavalry), slot(2, 0, UnitClass.Cavalry),
         slot(4, 0, UnitClass.Cavalry), slot(1, 1, UnitClass.Cavalry),
-      ],
-    },
+    ]),
   },
   {
     key: 'anti-cav',
     name: 'анти-кавалерия',
-    formation: {
-      slots: [
+    formation: equalize([
         slot(0, 0, UnitClass.Pikeman), slot(1, 0, UnitClass.Pikeman),
         slot(2, 0, UnitClass.Pikeman), slot(1, 2, UnitClass.Archer),
-      ],
-    },
+    ]),
   },
   {
     key: 'balanced',
     name: 'сбалансированный',
-    formation: {
-      slots: [
+    formation: equalize([
         slot(0, 0, UnitClass.Paviser), slot(1, 0, UnitClass.Infantry),
         slot(2, 0, UnitClass.Pikeman), slot(1, 2, UnitClass.Archer),
         slot(0, 2, UnitClass.Mage), slot(2, 3, UnitClass.Healer),
-      ],
-    },
+    ]),
   },
 ]
 
