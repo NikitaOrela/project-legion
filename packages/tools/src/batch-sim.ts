@@ -153,12 +153,15 @@ interface PairResult {
   avgTicks: number
   /** доля урона, нанесённая каждым классом со стороны A */
   dealtByClass: Float64Array
+  /** сколько HP восстановлено каждым классом со стороны A */
+  healedByClass: Float64Array
 }
 
 function runPair(a: Archetype, b: Archetype, n: number): PairResult {
   let winsA = 0
   let ticks = 0
   const dealtByClass = new Float64Array(UnitClass.COUNT)
+  const healedByClass = new Float64Array(UnitClass.COUNT)
 
   for (let i = 1; i <= n; i++) {
     // Сид детерминирован парой и номером прогона: отчёт воспроизводим целиком
@@ -168,10 +171,12 @@ function runPair(a: Archetype, b: Archetype, n: number): PairResult {
     ticks += r.ticks
     const w = r.world
     for (let id = 0; id < w.count; id++) {
-      if (w.team[id]! === 0) dealtByClass[w.cls[id]!]! += r.stats.dealt[id]!
+      if (w.team[id]! !== 0) continue
+      dealtByClass[w.cls[id]!]! += r.stats.dealt[id]!
+      healedByClass[w.cls[id]!]! += r.stats.healed[id]!
     }
   }
-  return { winsA, battles: n, avgTicks: ticks / n, dealtByClass }
+  return { winsA, battles: n, avgTicks: ticks / n, dealtByClass, healedByClass }
 }
 
 function pct(x: number): string {
@@ -187,6 +192,7 @@ function main(): void {
   const wr: number[][] = Array.from({ length: m }, () => new Array<number>(m).fill(0))
   const ttk: number[][] = Array.from({ length: m }, () => new Array<number>(m).fill(0))
   const dealt = new Float64Array(UnitClass.COUNT)
+  const healed = new Float64Array(UnitClass.COUNT)
   let battles = 0
 
   for (let i = 0; i < m; i++) {
@@ -195,7 +201,10 @@ function main(): void {
       wr[i]![j] = r.winsA / r.battles
       ttk[i]![j] = r.avgTicks / TICK_HZ
       battles += r.battles
-      for (let c = 0; c < UnitClass.COUNT; c++) dealt[c]! += r.dealtByClass[c]!
+      for (let c = 0; c < UnitClass.COUNT; c++) {
+        dealt[c]! += r.dealtByClass[c]!
+        healed[c]! += r.healedByClass[c]!
+      }
     }
   }
 
@@ -210,9 +219,55 @@ function main(): void {
     console.log(label(`${i} ${ARCHETYPES[i]!.name}`) + row)
   }
 
+  /*
+   * --- ГЛАВНАЯ МЕТРИКА: доля НЕ предрешённых матчапов ---
+   *
+   * Заменила прежний DoD «все пары в коридоре 40–60%» (04_ROADMAP, ADR-010).
+   * Тот был сформулирован неверно: среди архетипов есть диагностические зонды
+   * вроде «шесть лекарей», которые обязаны проигрывать всегда. Требовать от
+   * них 40–60% — значит требовать, чтобы лекарь убивал.
+   *
+   * Здесь меряется то, ради чего вся балансная работа и делается: в скольких
+   * матчапах исход НЕ известен заранее. Клетка 0 или 100 означает, что бой
+   * можно не смотреть — а это смерть столпа 2.
+   */
+  let decided = 0
+  let open = 0
+  for (let i = 0; i < m; i++) {
+    for (let j = 0; j < m; j++) {
+      if (i === j) continue
+      const v = wr[i]![j]!
+      if (v <= 0.02 || v >= 0.98) decided++
+      else open++
+    }
+  }
+  const openPct = (open * 100) / (open + decided)
+  console.log(
+    `\nИСХОД НЕ ПРЕДРЕШЁН: ${open} матчапов из ${open + decided} (${openPct.toFixed(0)}%)` +
+      `  ← главная метрика, цель ≥ 40%`,
+  )
+
+  // --- симметрия сторон ---
+  // wr(X,Y) + wr(Y,X) обязано давать 100%. Отклонение = преимущество за место
+  // в сетке, а не за состав. Для PvP это вопрос честности матча.
+  let worstSkew = 0
+  let worstPair = ''
+  for (let i = 0; i < m; i++) {
+    for (let j = i + 1; j < m; j++) {
+      const skew = Math.abs((wr[i]![j]! + wr[j]![i]!) * 100 - 100)
+      if (skew > worstSkew) {
+        worstSkew = skew
+        worstPair = `${ARCHETYPES[i]!.name} / ${ARCHETYPES[j]!.name}`
+      }
+    }
+  }
+  console.log(
+    `СИММЕТРИЯ СТОРОН: худшее отклонение ${worstSkew.toFixed(0)} п.п. (${worstPair})` +
+      `  ← цель ≤ 15`,
+  )
+
   // --- кто вне коридора ---
-  // DoD фазы 4: все пары в диапазоне 40-60%. Ниже — что из него выпало.
-  console.log('\nВЫПАДАЮТ ИЗ КОРИДОРА 40-60%:\n')
+  console.log('\nВЫПАДАЮТ ИЗ КОРИДОРА 40-60% (справочно, не DoD):\n')
   const bad: Array<[string, string, number]> = []
   for (let i = 0; i < m; i++) {
     for (let j = 0; j < m; j++) {
@@ -250,6 +305,25 @@ function main(): void {
   for (const c of byCls) {
     const bar = '█'.repeat(Math.round(c.share * 60))
     console.log(`  ${(c.share * 100).toFixed(1).padStart(5)}%  ${c.name.padEnd(10)} ${bar}`)
+  }
+
+  // --- вклад лекарей ---
+  // Без этой строки лекарь неизмерим: он не наносит урона, поэтому в таблице
+  // выше у него всегда 0.0%, и понять, работает ли класс, невозможно.
+  const totalHealed = healed.reduce((s2, v) => s2 + v, 0)
+  const totalDealt = dealt.reduce((s2, v) => s2 + v, 0)
+  if (totalHealed > 0) {
+    console.log('\nВОССТАНОВЛЕНО HP (лечение как доля от всего урона в игре):\n')
+    for (let c = 0; c < UnitClass.COUNT; c++) {
+      if (healed[c]! === 0) continue
+      const share = (healed[c]! * 100) / totalDealt
+      console.log(
+        `  ${share.toFixed(1).padStart(5)}%  ${CLASS_PROFILES[c]!.name.padEnd(10)} ` +
+          '▓'.repeat(Math.round(share * 2)),
+      )
+    }
+  } else {
+    console.log('\n⚠️  ЛЕЧЕНИЯ НЕ ЗАФИКСИРОВАНО ВООБЩЕ — лекарь не работает')
   }
 
   // --- темп ---

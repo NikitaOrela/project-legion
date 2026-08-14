@@ -29,9 +29,11 @@
  * ПОРЯДОК ПОТРЕБЛЕНИЯ RNG ФИКСИРОВАН: сначала бросок крита, потом разброс.
  * Менять порядок нельзя — сломаются все golden-реплеи.
  *
- * Смерти НЕ применяются сразу: копятся и разрешаются пакетом в конце тика.
- * Иначе «A убил B, B убил A в том же тике» даёт разный результат в зависимости
- * от порядка обхода.
+ * ТИК ОДНОВРЕМЕНЕН. Ни урон, ни лечение не применяются в момент удара: они
+ * копятся и раскрываются разом в конце прохода (settleTick), смерти считаются
+ * после этого. Обход по возрастанию entityId сохраняется ради детерминизма, но
+ * на ИСХОД он больше не влияет — иначе команда с меньшими id всегда
+ * била раньше, и зеркальный бой давал 33% вместо 50%.
  */
 
 import type { World } from '../world.js'
@@ -86,6 +88,52 @@ export function createStats(cap: number): CombatStats {
 
 const splashRange4 = new Int32Array(4)
 
+/*
+ * ОДНОВРЕМЕННОСТЬ ТИКА. Буферы отложенного урона и лечения.
+ *
+ * Урон НЕ применяется в момент удара — он копится здесь и раскрывается разом
+ * в конце прохода. Это не оптимизация, а вопрос честности симуляции.
+ *
+ * Как было: урон применялся сразу, а обход идёт по возрастанию entityId, и у
+ * команды B все id больше, чем у команды A. Значит одна сторона всегда била
+ * раньше другой внутри тика. Замер зеркального боя (одинаковые формации, один
+ * сид) показывал 32–47% побед у A — то есть сторона решалась не составом, а
+ * номером в массиве. Попытка чинить это проверкой «мёртвый не бьёт» лишь
+ * перевернула перекос в другую сторону: 53–100%.
+ *
+ * Обе версии были смещены, потому что лечили симптом. Причина — сама
+ * последовательность внутри тика. Теперь её нет: все бьют по состоянию мира
+ * на начало тика, весь урон раскрывается вместе, смерти считаются после.
+ * Порядок обхода перестал влиять на исход.
+ *
+ * Для PvP это не косметика: при живом рейтинге систематическое преимущество
+ * за место в сетке — это нечестный матч при формально детерминированной
+ * симуляции.
+ *
+ * Массивы модульные, а не поля World: они полностью обнуляются в начале
+ * каждого прохода и на границе тика всегда нулевые, поэтому в состояние
+ * симуляции и в хэш не входят.
+ */
+let pendDmg = new Int32Array(0)
+let pendHeal = new Int32Array(0)
+/** Кто нанёс наибольшую часть урона по цели в этом тике — тому и убийство. */
+let pendKiller = new Int32Array(0)
+let pendKillerDmg = new Int32Array(0)
+
+function ensurePendBuffers(n: number): void {
+  if (pendDmg.length < n) {
+    pendDmg = new Int32Array(n)
+    pendHeal = new Int32Array(n)
+    pendKiller = new Int32Array(n).fill(-1)
+    pendKillerDmg = new Int32Array(n)
+  } else {
+    pendDmg.fill(0, 0, n)
+    pendHeal.fill(0, 0, n)
+    pendKiller.fill(-1, 0, n)
+    pendKillerDmg.fill(0, 0, n)
+  }
+}
+
 export function runCombat(
   w: World,
   rng: RngState,
@@ -93,6 +141,8 @@ export function runCombat(
   sh: SpatialHash,
   ev: EventBuffer,
 ): void {
+  ensurePendBuffers(w.count)
+
   for (let i = 0; i < w.aliveCount; i++) {
     const id = w.alive[i]!
 
@@ -140,6 +190,8 @@ export function runCombat(
     }
   }
 
+  settleTick(w, stats, ev)
+
   // Кулдауны скиллов и стаки Hold Ground — отдельным проходом по alive, строго
   // по возрастанию entityId, чтобы порядок не зависел от того, кто в этом тике
   // атаковал. Проход без RNG, поэтому на детерминизм он не влияет вовсе.
@@ -183,7 +235,6 @@ function applyHit(
   ev: EventBuffer,
   extraFlags: number,
 ): void {
-  const before = w.hp[victim]!
   let dmg = computeDamage(w, rng, attacker, victim)
   // Сплэш бьёт слабее основной цели — см. SPLASH_PCT.
   // Срез ПОСЛЕ computeDamage, а не внутри: порядок потребления RNG обязан
@@ -193,22 +244,53 @@ function applyHit(
     dmg = ((dmg * SPLASH_PCT) / 100) | 0
     if (dmg < 1) dmg = 1
   }
-  w.hp[victim] = before - dmg
+  pendDmg[victim] = pendDmg[victim]! + dmg
   stats.dealt[attacker] = stats.dealt[attacker]! + dmg
   stats.taken[victim] = stats.taken[victim]! + dmg
+
+  // Убийство засчитывается тому, кто внёс больший вклад за тик; при равенстве —
+  // меньшему entityId. Полный порядок, поэтому от обхода не зависит.
+  if (dmg > pendKillerDmg[victim]! ||
+      (dmg === pendKillerDmg[victim]! && attacker < pendKiller[victim]!)) {
+    pendKillerDmg[victim] = dmg
+    pendKiller[victim] = attacker
+  }
 
   let flags = extraFlags | lastHitFlags
   if (COUNTER_PCT[w.cls[attacker]!]![w.cls[victim]!]! >= COUNTER_VISIBLE_PCT) {
     flags |= EventFlag.Counter
   }
   pushEvent(ev, EventKind.Damage, attacker, victim, dmg, flags)
+}
 
-  if (w.hp[victim]! <= 0) {
-    markDead(w, victim)
-    stats.kills[attacker] = stats.kills[attacker]! + 1
-    stats.killedBy[victim] = attacker
-    stats.deathTick[victim] = w.tick
-    pushEvent(ev, EventKind.Death, attacker, victim, 0, 0)
+/**
+ * Раскрыть накопленный за тик урон и лечение.
+ *
+ * Порядок внутри юнита: HP + лечение − урон, затем отсечка по максимуму.
+ * Именно так и означает «одновременно»: если по цели в один тик прилетели и
+ * хил, и удар, результат не должен зависеть от того, что посчитали первым.
+ */
+function settleTick(w: World, stats: CombatStats, ev: EventBuffer): void {
+  for (let i = 0; i < w.aliveCount; i++) {
+    const id = w.alive[i]!
+    const dmg = pendDmg[id]!
+    const heal = pendHeal[id]!
+    if (dmg === 0 && heal === 0) continue
+
+    let hp = w.hp[id]! + heal - dmg
+    if (hp > w.hpMax[id]!) hp = w.hpMax[id]!
+    w.hp[id] = hp
+
+    if (hp <= 0) {
+      const killer = pendKiller[id]!
+      markDead(w, id)
+      stats.deathTick[id] = w.tick
+      if (killer >= 0) {
+        stats.kills[killer] = stats.kills[killer]! + 1
+        stats.killedBy[id] = killer
+      }
+      pushEvent(ev, EventKind.Death, killer, id, 0, 0)
+    }
   }
 }
 
@@ -266,10 +348,12 @@ function applyHeal(
   if (isCrit) heal = ((heal * CRIT_MULT_PCT) / 100) | 0
   heal = ((heal * variancePct) / 100) | 0
 
+  // Отсечка по максимуму — в settleTick, а не здесь: на момент удара мы ещё не
+  // знаем, сколько урона прилетит по этой же цели в этом же тике.
   const room = w.hpMax[ally]! - w.hp[ally]!
   if (heal > room) heal = room
   if (heal <= 0) return
-  w.hp[ally] = w.hp[ally]! + heal
+  pendHeal[ally] = pendHeal[ally]! + heal
   stats.healed[healer] = stats.healed[healer]! + heal
   pushEvent(ev, EventKind.Heal, healer, ally, heal, isCrit ? EventFlag.Crit : 0)
 }
