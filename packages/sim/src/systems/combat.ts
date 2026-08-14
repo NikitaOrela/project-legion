@@ -56,6 +56,7 @@ import {
   HEAL_POWER_PCT,
   MAGE_SPLASH_PERIOD,
   NO_TARGET,
+  SKILL_VS_SOLDIER_PCT,
   SPLASH_PCT,
   VARIANCE_MIN_PCT,
   VARIANCE_SPAN_PCT,
@@ -240,7 +241,11 @@ function applyHit(
   // остаться одинаковым для основной цели и для задетых, иначе golden-реплеи
   // разъезжаются при любом изменении плотности строя.
   if ((extraFlags & EventFlag.Splash) !== 0) {
-    dmg = ((dmg * SPLASH_PCT) / 100) | 0
+    // По герою скилл бьёт в полную силу, по рядовому — срезанно.
+    // См. SKILL_VS_SOLDIER_PCT: это и делает мага убийцей героев, а не
+    // косилкой для армий.
+    const pct = w.isHero[victim]! === 1 ? SPLASH_PCT : SKILL_VS_SOLDIER_PCT
+    dmg = ((dmg * pct) / 100) | 0
     if (dmg < 1) dmg = 1
   }
   if (dmg === 0) {
