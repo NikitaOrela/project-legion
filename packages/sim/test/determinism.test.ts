@@ -33,13 +33,25 @@ const B: Formation = formation([
 ])
 
 describe('Детерминизм', () => {
-  it('одинаковый seed → побитово одинаковый результат, 1000 прогонов', { timeout: 120_000 }, () => {
+  /*
+   * Тест async и уступает event loop каждые 100 прогонов — это НЕ косметика.
+   *
+   * После ADR-009 бой длится втрое дольше, и тысяча прогонов держала поток
+   * занятым около минуты подряд. Воркер vitest не успевал отвечать репортеру,
+   * тот падал с «Timeout calling onTaskUpdate», и CI показывал провал при
+   * 64 зелёных тестах. Диагностировать такое во второй раз — потерянный час.
+   *
+   * setImmediate внутри ТЕСТА, а не внутри симуляции: инвариант «никаких
+   * промисов и таймеров в packages/sim» касается ядра, не проверки.
+   */
+  it('одинаковый seed → побитово одинаковый результат, 1000 прогонов', { timeout: 180_000 }, async () => {
     const ref = runBattle(12345, A, B)
     for (let i = 0; i < 1000; i++) {
       const r = runBattle(12345, A, B)
       expect(r.hash.combined).toBe(ref.hash.combined)
       expect(r.ticks).toBe(ref.ticks)
       expect(r.outcome).toBe(ref.outcome)
+      if (i % 100 === 99) await new Promise((resolve) => setImmediate(resolve))
     }
   })
 
