@@ -212,6 +212,16 @@ const ARCHETYPES: Archetype[] = [
     isProbe: false,
   },
   {
+    key: 'sky-raid',
+    name: 'налёт на тыл',
+    formation: equalize([
+      slot(0, 0, UnitClass.Infantry), slot(1, 0, UnitClass.Paviser),
+      slot(2, 0, UnitClass.Infantry), slot(0, 1, UnitClass.Skyrider),
+      slot(1, 1, UnitClass.Skyrider), slot(2, 1, UnitClass.Skyrider),
+    ]),
+    isProbe: false,
+  },
+  {
     key: 'deep-line',
     name: 'тройная линия',
     formation: equalize([

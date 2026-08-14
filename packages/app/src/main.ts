@@ -52,6 +52,7 @@ const CLASS_RU: Record<number, string> = {
   [UnitClass.Arbalist]: 'Арбалет',
   [UnitClass.Mage]: 'Маг',
   [UnitClass.Healer]: 'Лекарь',
+  [UnitClass.Skyrider]: 'Налётчик',
 }
 
 /**
@@ -72,6 +73,7 @@ function svgShape(cls: number, color: string): string {
       case UnitClass.Arbalist: return `<polygon points="12,4.8 19.7,19.2 4.3,19.2"/><rect x="2.4" y="10.6" width="19.2" height="3.1"/>`
       case UnitClass.Mage: return `<polygon points="12,1.9 21.6,12 12,22.1 2.4,12"/>`
       case UnitClass.Healer: return `<rect x="9.1" y="2.9" width="5.8" height="18.2"/><rect x="2.9" y="9.1" width="18.2" height="5.8"/>`
+      case UnitClass.Skyrider: return `<polygon points="12,4.3 23.5,12 12,10.1"/><polygon points="12,4.3 0.5,12 12,10.1"/><rect x="10.1" y="8.2" width="3.8" height="12"/>`
       default: return `<circle cx="12" cy="12" r="7"/>`
     }
   })()

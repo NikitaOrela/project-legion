@@ -73,6 +73,13 @@ function drawShape(g: Graphics, cls: number, color: number): void {
       g.rect(s * 0.38, s * 0.12, s * 0.24, s * 0.76).fill(color)
       g.rect(s * 0.12, s * 0.38, s * 0.76, s * 0.24).fill(color)
       break
+    case UnitClass.Skyrider:
+      // Крылья: единственный силуэт, расходящийся в стороны от центра.
+      // Читается как «не стоит в строю» — что и есть роль класса.
+      g.poly([h, s * 0.18, s * 0.98, s * 0.5, h, s * 0.42]).fill(color)
+      g.poly([h, s * 0.18, s * 0.02, s * 0.5, h, s * 0.42]).fill(color)
+      g.rect(s * 0.42, s * 0.34, s * 0.16, s * 0.5).fill(color)
+      break
     default:
       g.circle(h, h, s * 0.3).fill(color)
   }
